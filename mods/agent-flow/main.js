@@ -5,10 +5,12 @@
 // run things, they don't take part. There's no real percentage for an agent's work, so bars
 // show running or finished, and numbers are counted, never guessed.
 
-import { View, div, image, svg } from "gpui-kit";
+import { View, div, image, svg, PathBuilder } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
 import { agents, terminals, panes, spaces, focused, theme, props, run, exec, appHome, closeOverlay, layout } from "herdr";
-import * as demo from "./demo.js";
+import * as team from "./examples/team.js";
+import * as platform from "./examples/platform.js";
+import { SHAPES, choose } from "./shapes.js";
 
 const MOD = "agent-flow";
 const FONT = "JetBrains Mono";
@@ -20,6 +22,10 @@ const NARROW = 500;     // below this the flow becomes a list: a side panel is 3
 const LINK_MS = 10 * 60000; // how long a message between agents stays drawn
 const LINK_LIVE_MS = 90000; // and how long it counts as happening now
 const MAX_LANES = 3;
+const EXAMPLES = { team: { data: team, name: "billing" }, platform: { data: platform, name: "payments-platform" } };
+const VIEWS = { diagram: "Diagram", map: "Map", timeline: "Timeline" };
+const SHAPE_NAMES = { auto: "Auto", tree: "Tree", stages: "Stages", radial: "Radial", organic: "Organic" };
+const NODE_H = 44;
 const SPIN = ["◐", "◓", "◑", "◒"];
 const RANK = { blocked: 0, working: 1, done: 2, idle: 3 };
 const SCANNED = ["opencode", "codex"]; // agents whose folder scan.cjs must be told
@@ -109,9 +115,9 @@ function graph(list, sessions, t) {
   const nodes = [];
   for (const a of list) {
     const s = sessions.get(a.address);
-    nodes.push({ key: a.address, name: a.name, model: s?.model ?? null, color: tone(s?.model, t, a.app), program: a.program, parent: a.parent, session: s, names: [a.address, a.label] });
+    nodes.push({ key: a.address, name: a.name, role: a.label, model: s?.model ?? null, status: a.status, color: tone(s?.model, t, a.app), program: a.program, parent: a.parent, session: s, terminal: a.address, names: [a.address, a.label] });
     for (const k of visibleSubs(s)) {
-      nodes.push({ key: k.id, name: k.type, model: k.model, color: tone(k.model, t, a.app), program: a.program, parent: a.address, session: k, names: [k.id, k.type] });
+      nodes.push({ key: k.id, name: k.type, role: k.type, model: k.model, status: k.status, color: tone(k.model, t, a.app), program: a.program, parent: a.address, session: k, names: [k.id, k.type] });
     }
   }
   const find = (to) => nodes.find((n) => n.names.includes(to));
@@ -138,11 +144,13 @@ function graph(list, sessions, t) {
 // Messages lately, one per direction between two agents.
 function links(g, now) {
   const found = new Map();
-  const name = (key) => g.nodes.find((n) => n.key === key)?.name ?? key;
+  const node = (key) => g.nodes.find((n) => n.key === key);
+  const name = (key) => node(key)?.name ?? key;
+  const role = (key) => node(key)?.role ?? name(key);
   for (const e of g.events) {
     if (e.kind !== "message" || now - e.t > LINK_MS) continue;
     const id = `${e.from}>${e.to}`;
-    const l = found.get(id) ?? { from: e.from, to: e.to, fromName: name(e.from), toName: name(e.to), n: 0, last: 0 };
+    const l = found.get(id) ?? { from: e.from, to: e.to, fromName: name(e.from), toName: name(e.to), fromRole: role(e.from), toRole: role(e.to), n: 0, last: 0 };
     l.n++;
     l.last = Math.max(l.last, e.t);
     found.set(id, l);
@@ -152,28 +160,30 @@ function links(g, now) {
 
 export default class AgentFlow extends View {
   init(_props, cx) {
-    this.demo = !!props()?.demo;
-    this.pick = this.demo ? "t1" : null; // the chosen lead; null follows focus
+    this.sample = EXAMPLES[props()?.example] ?? null; // made-up data instead of live agents
+    this.pick = this.sample ? "t1" : null; // the chosen lead; null follows focus
     this.space = null;      // the space shown; changing it starts over
     this.lastLead = null;
     this.kid = null;        // the box shown in the side panel; null is the lead
-    this.scan = this.demo ? demo.scan : { sessions: [] };
+    this.scan = this.sample ? this.sample.data.scan : { sessions: [] };
     this.raw = "";
     this.busy = false;
     this.error = null;
     this.status = {};       // address -> last status, to log changes
     this.events = [];
-    this.view = props()?.view === "timeline" ? "timeline" : "diagram";
+    this.view = [props()?.view, localStorage.getItem("view")].find((v) => VIEWS[v]) ?? "diagram";
     this.expanded = false;  // "+N more" asked for every box, as a list
+    this.shape = [props()?.shape, localStorage.getItem("shape")].find((v) => SHAPE_NAMES[v]) ?? "auto";
+    this.placed = null;     // the Map's last layout; it only moves when the graph does
     this.width = 900;
     this.height = 800;
-    if (this.demo) return;
+    if (this.sample) return;
     this.refresh(cx);
     cx.timer.every(SCAN_MS, (cx) => this.refresh(cx));
   }
 
   now() {
-    return this.demo ? demo.now : Date.now();
+    return this.sample ? this.sample.data.now : Date.now();
   }
 
   refresh(cx) {
@@ -205,8 +215,8 @@ export default class AgentFlow extends View {
 
   // Every live terminal as one shape, split into agents and plain terminals.
   world() {
-    const raw = (this.demo ? demo.terminals : terminals()).filter((k) => k.state === "live");
-    const listed = new Map((this.demo ? [] : agents()).map((a) => [a.address, a]));
+    const raw = (this.sample ? this.sample.data.terminals : terminals()).filter((k) => k.state === "live");
+    const listed = new Map((this.sample ? [] : agents()).map((a) => [a.address, a]));
     const all = raw.map((k) => {
       const seen = listed.get(k.address);
       const word = seen?.status ?? k.status;
@@ -226,7 +236,7 @@ export default class AgentFlow extends View {
   }
 
   chosen(leads, list) {
-    const f = this.demo ? null : focused()?.terminal;
+    const f = this.sample ? null : focused()?.terminal;
     const asked = list.find((a) => a.address === (this.pick ?? f));
     const top = asked?.parent && leads.find((a) => a.address === asked.parent);
     const lead = top ?? leads.find((a) => a.address === asked?.address) ?? leads.find((a) => a.address === this.lastLead) ?? leads[0] ?? null;
@@ -366,7 +376,8 @@ export default class AgentFlow extends View {
       .when(!!n.address, (e) => e.cursor_pointer().hover((s) => s.bg(t.hover)).on_click((_e, cx) => { cx.stop_propagation(); this.peek(n.address); }))
       .child(div().flex_none().text_color(t.dim).child("└"))
       .child(this.mark(n.status, t))
-      .child(div().flex_1().min_w(0).truncate().text_color(n.color).child(`${n.name}${n.model ? ` · ${modelName(n.model)}` : ""}`)));
+      .child(div().flex_1().min_w(0).truncate().text_color(n.color).child(`${n.name}${n.model ? ` · ${modelName(n.model)}` : ""}`)))
+      .concat((k.nested?.length ?? 0) > 3 ? [div().pl(14).text_color(t.dim).child(`+${k.nested.length - 3} more`)] : []);
   }
 
   // Messages with the lead, on the box: sent up and received.
@@ -490,7 +501,7 @@ export default class AgentFlow extends View {
     const header = div().relative().w_full().h(40).flex_none().children(cols.map((c, i) =>
       v_flex().absolute().top(0).left(Math.round(gutter + i * cell)).w(Math.floor(cell)).px(3).items_center()
         .child(h_flex().gap(4).max_w_full().items_center().child(icon(c.program, 12, c.color) ?? div())
-          .child(div().truncate().font_semibold().child(c.name)))
+          .child(div().truncate().font_semibold().child(c.role ?? c.name)))
         .child(div().max_w_full().truncate().text_color(c.model ? c.color : t.dim).child(modelName(c.model) ?? "model unknown"))));
     const line = (e, i) => {
       const a = x(e.from);
@@ -510,6 +521,99 @@ export default class AgentFlow extends View {
     const flow = v_flex().id("flow").flex_1().min_w(0).h_full().overflow_y_scroll().child(header);
     if (!rows.length) return flow.child(v_flex().w_full().pt(20).items_center().text_color(t.dim).child("Nothing has passed between agents yet"));
     return flow.child(div().relative().w_full().h(8).flex_none().children(lifelines())).children(rows.map(line));
+  }
+
+  // Every agent at any depth, placed by the shape of the work rather than in rows: Auto
+  // picks from who talks to whom, so the arrangement changes as the work does.
+  map(lead, g, t, room, h) {
+    const now = this.now();
+    const flows = links(g, now);
+    const byKey = new Map(g.nodes.map((n) => [n.key, n]));
+    const family = (l) => byKey.get(l.to)?.parent === l.from || byKey.get(l.from)?.parent === l.to;
+    const routes = flows.filter((l) => !family(l));
+    const shape = this.shape === "auto" ? choose(g.nodes, routes) : this.shape;
+    const wide = room >= 700 ? 168 : room >= 480 ? 136 : 112;
+    const sig = [shape, Math.round(room), Math.round(h), lead.address, ...g.nodes.map((n) => `${n.key}<${n.parent}`), ...routes.map((l) => `${l.from}>${l.to}`).sort()].join("|");
+    if (this.placed?.sig !== sig) {
+      this.placed = { sig, ...SHAPES[shape](g.nodes, routes, { lead: lead.address, room, W: wide, H: NODE_H, height: h }) };
+    }
+    const { pos, height, marks: columns = [], W = wide } = this.placed;
+
+    // A curve leaves from the side facing the other node, so lines cross as little as they can.
+    const anchor = (a, b, sideways) => {
+      const ax = a.x + W / 2; const ay = a.y + NODE_H / 2;
+      const bx = b.x + W / 2; const by = b.y + NODE_H / 2;
+      if (sideways || Math.abs(bx - ax) / W >= Math.abs(by - ay) / NODE_H) {
+        const s = bx > ax ? 1 : -1;
+        return { x1: ax + s * W / 2, y1: ay, x2: bx - s * W / 2, y2: by, dx: s, dy: 0 };
+      }
+      const s = by > ay ? 1 : -1;
+      return { x1: ax, y1: ay + s * NODE_H / 2, x2: bx, y2: by - s * NODE_H / 2, dx: 0, dy: s };
+    };
+    const curve = (e, a) => {
+      const reach = Math.max(24, (Math.abs(a.x2 - a.x1) + Math.abs(a.y2 - a.y1)) / 2.4);
+      return e.move_to(a.x1, a.y1).cubic_bezier_to(a.x2, a.y2, a.x1 + a.dx * reach, a.y1 + a.dy * reach, a.x2 - a.dx * reach, a.y2 - a.dy * reach);
+    };
+    const paint = (path, color) => window.paint_path(path.build(), color).absolute().top(0).left(0).size_full();
+    const paths = new Map();
+    const stroke = (color, width, dash) => {
+      const id = `${color}/${width}/${dash}`;
+      if (!paths.has(id)) paths.set(id, { color, path: dash ? PathBuilder.stroke(width).dash_array([4, 4]) : PathBuilder.stroke(width) });
+      return paths.get(id);
+    };
+    for (const n of g.nodes) {
+      if (!pos.has(n.key) || !pos.has(n.parent)) continue;
+      const line = stroke(n.status === "working" ? n.color : t.border, 1, false);
+      line.path = curve(line.path, anchor(pos.get(n.parent), pos.get(n.key), shape === "tree" || shape === "stages"));
+    }
+    const marks = [];
+    for (const l of routes) {
+      const a = pos.get(l.from);
+      const b = pos.get(l.to);
+      if (!a || !b) continue;
+      const live = now - l.last < LINK_LIVE_MS;
+      const color = live ? byKey.get(l.from).color : t.dim;
+      const line = stroke(color, live ? 1.5 : 1, !live);
+      const at = anchor(a, b);
+      line.path = curve(line.path, at);
+      const head = PathBuilder.fill().add_polygon([[at.x2, at.y2], [at.x2 - at.dx * 7 - at.dy * 3.5, at.y2 - at.dy * 7 - at.dx * 3.5], [at.x2 - at.dx * 7 + at.dy * 3.5, at.y2 - at.dy * 7 + at.dx * 3.5]], true);
+      marks.push(paint(head, color));
+      if (live) marks.push(div().absolute().left(at.x2 - 3).top(at.y2 - 3).w(6).h(6).rounded(3).bg(color).loop("opacity", { from: 0.2, to: 1, period: 1100 }));
+    }
+
+    const up = (key) => flows.filter((l) => l.from === key && byKey.get(key)?.parent === l.to).reduce((n, l) => n + l.n, 0);
+    const nodes = g.nodes.filter((n) => pos.has(n.key)).map((n) => {
+      const p = pos.get(n.key);
+      const quiet = n.status === "idle" || n.status === "stale";
+      return v_flex().id(`node-${n.key}`).absolute().left(Math.round(p.x)).top(Math.round(p.y)).w(W).h(NODE_H).px(6).justify_center().bg(t.background)
+        .transition("left", { duration: 450 }).transition("top", { duration: 450 })
+        .border(!n.parent || !byKey.has(n.parent) ? 2 : 1).border_color(quiet ? t.border : n.status === "blocked" ? t.blocked : n.color)
+        .when(!!n.terminal, (e) => e.cursor_pointer().hover((s) => s.bg(t.hover)).on_click((_e, cx) => {
+          if (!n.parent || !byKey.has(n.parent)) { this.pick = n.key; this.kid = null; cx.notify(); } else this.peek(n.terminal);
+        }))
+        .child(h_flex().gap(4).items_center().min_w(0)
+          .child(this.mark(n.status, t))
+          .child(icon(n.program, 11, n.color) ?? div())
+          .child(div().flex_1().min_w(0).truncate().font_semibold().child(n.role ?? n.name))
+          .when(up(n.key) > 0, (e) => e.child(div().flex_none().text_color(t.muted).child(`↑${up(n.key)}`))))
+        .child(div().truncate().text_size(11).text_color(n.model ? n.color : t.dim).child(modelName(n.model) ?? n.name));
+    });
+
+    const labels = columns.map((c) => div().absolute().top(0).left(c.x).text_size(11).text_color(t.dim).child(c.text));
+    const running = g.nodes.filter((n) => n.status === "working").length;
+    const pickShape = ([id, label]) => div().id(`shape-${id}`).px(5).rounded(3).cursor_pointer()
+      .bg(this.shape === id ? t.selected : "#00000000").text_color(this.shape === id ? t.foreground : t.muted)
+      .hover((e) => e.bg(t.hover)).on_click((_e, cx) => { this.shape = id; localStorage.setItem("shape", id); cx.notify(); })
+      .child(id === "auto" && this.shape === "auto" ? `Auto: ${SHAPE_NAMES[shape]}` : label);
+    return v_flex().id("flow").flex_1().min_w(0).h_full().gap(6).overflow_y_scroll()
+      .child(h_flex().flex_none().flex_wrap().justify_between().gap(8)
+        .child(h_flex().flex_none().gap(12).text_color(t.dim)
+          .child(`${g.nodes.length} agents`).child(`${running} running`).child(`${routes.length} direct route${routes.length === 1 ? "" : "s"}`))
+        .child(h_flex().flex_none().gap(2).children(Object.entries(SHAPE_NAMES).map(pickShape))))
+      .child(div().relative().w_full().h(Math.max(height, h)).flex_none()
+        .children([...paths.values()].map((e) => paint(e.path, e.color))).children(labels).children(marks).children(nodes))
+      .when(routes.length > 0, (e) => e.child(h_flex().flex_none().flex_wrap().gap(10).pt(2).children(routes.slice(0, 7).map((l) =>
+        div().flex_none().text_color(now - l.last < LINK_LIVE_MS ? t.foreground : t.dim).child(`⇄ ${l.fromRole} → ${l.toRole}${l.n > 1 ? ` ×${l.n}` : ""}`)))));
   }
 
   flow(lead, session, kids, g, t, room, bg) {
@@ -573,7 +677,7 @@ export default class AgentFlow extends View {
         div().id(`tool-${i}`).truncate().text_color(t.foreground).child(`» ${toolLine(x)}`))));
     if (!k || k.address) {
       panel.child(this.button("go", k ? "peek terminal" : "go to terminal", t, () => {
-        if (this.demo) return;
+        if (this.sample) return;
         if (k) this.peek(k.address);
         else { run("agent.focus", { terminal: lead.address }); this.close(); }
       }));
@@ -582,14 +686,14 @@ export default class AgentFlow extends View {
   }
 
   peek(address) {
-    if (!this.demo) run("terminal.peek", { terminal: address });
+    if (!this.sample) run("terminal.peek", { terminal: address });
   }
 
   switcher(t) {
-    const tab = (id, label) => div().id(`view-${id}`).px(6).rounded(3).cursor_pointer()
+    const tab = ([id, label]) => div().id(`view-${id}`).px(6).rounded(3).cursor_pointer()
       .bg(this.view === id ? t.selected : "#00000000").text_color(this.view === id ? t.foreground : t.muted)
-      .hover((s) => s.bg(t.hover)).on_click((_e, cx) => { this.view = id; cx.notify(); }).child(label);
-    return h_flex().gap(2).flex_none().child(tab("diagram", "Diagram")).child(tab("timeline", "Timeline"));
+      .hover((s) => s.bg(t.hover)).on_click((_e, cx) => { this.view = id; localStorage.setItem("view", id); cx.notify(); }).child(label);
+    return h_flex().gap(2).flex_none().children(Object.entries(VIEWS).map(tab));
   }
 
   close() {
@@ -623,10 +727,10 @@ export default class AgentFlow extends View {
     const t = theme();
     const { agents: all, plain } = this.world();
     // The space it's called from: props().space pins a copy to one space.
-    const spaceId = this.demo ? null : props()?.space ?? focused()?.space ?? null;
-    if (spaceId !== this.space) { this.space = spaceId; this.pick = this.demo ? "t1" : null; this.lastLead = null; this.kid = null; this.expanded = false; }
-    const list = this.demo ? all : all.filter((a) => a.space === spaceId);
-    const spaceName = this.demo ? "demo" : spaces().find((p) => p.id === spaceId)?.name ?? "this space";
+    const spaceId = this.sample ? null : props()?.space ?? focused()?.space ?? null;
+    if (spaceId !== this.space) { this.space = spaceId; this.pick = this.sample ? "t1" : null; this.lastLead = null; this.kid = null; this.expanded = false; }
+    const list = this.sample ? all : all.filter((a) => a.space === spaceId);
+    const spaceName = this.sample ? this.sample.name : spaces().find((p) => p.id === spaceId)?.name ?? "this space";
     const live = new Set(list.map((a) => a.address));
     const leads = list.filter((a) => !a.parent || !live.has(a.parent))
       .sort((a, b) => (RANK[a.status] ?? 9) - (RANK[b.status] ?? 9) || b.seq - a.seq);
@@ -641,7 +745,7 @@ export default class AgentFlow extends View {
           .child(div().text_color(t.muted).child(`No agents in ${spaceName}`))
           .child(div().text_color(t.dim).child("Start one from the + menu and its work shows here")));
     }
-    if (!this.demo) this.track(all);
+    if (!this.sample) this.track(all);
     const sessions = pair(all, this.scan.sessions);
     const session = sessions.get(lead.address) ?? null;
     const kids = this.kids(lead, list, sessions, t);
@@ -650,7 +754,11 @@ export default class AgentFlow extends View {
     const working = kids.filter((k) => k.status === "working").length;
     const wide = this.width >= 640;
     const narrow = this.width < NARROW;
-    const room = this.width - 24 - (wide ? 236 : 0);
+    const beside = wide && this.view !== "map";
+    const room = this.width - 24 - (beside ? 236 : 0);
+    const bg = overlay ? t.canvas : t.chrome;
+    const mapHeight = Math.max(360, this.height - (narrow ? 280 : 330) - (mine.length ? 26 : 0));
+    const body = this.view === "map" ? this.map(lead, g, t, room, mapHeight) : this.view === "timeline" ? this.timeline(lead, g, t, room, bg) : this.flow(lead, session, kids, g, t, room, bg);
     const color = tone(session?.model, t, lead.app);
 
     return root
@@ -662,13 +770,12 @@ export default class AgentFlow extends View {
           .child(div().flex_none().text_color(working ? t.working : t.muted).child(`${working} RUNNING`)))
         .child(h_flex().gap(8).items_center().flex_none()
           .when(!!this.error, (e) => e.child(div().max_w(320).truncate().text_color(t.blocked).child(`no scan: ${this.error}`)))
-          .when(this.demo && !narrow, (e) => e.child(div().text_color(t.dim).child("demo data")))
           .child(this.switcher(t))
           .child(closer)))
       .child(this.chips(leads, lead, t))
       .child(h_flex().flex_1().min_h(0).gap(10).items_start()
-        .when(wide, (e) => e.child(this.side(lead, session, kids, t)))
-        .child(this.view === "timeline" ? this.timeline(lead, g, t, room, overlay ? t.canvas : t.chrome) : this.flow(lead, session, kids, g, t, room, overlay ? t.canvas : t.chrome)))
+        .when(beside, (e) => e.child(this.side(lead, session, kids, t)))
+        .child(body))
       .when(mine.length > 0, (e) => e.child(this.plainList(mine, t)))
       .child(this.logBox(this.logRows(lead, session, kids, list, t), t, narrow));
   }

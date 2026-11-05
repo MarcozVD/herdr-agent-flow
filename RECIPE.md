@@ -1,8 +1,12 @@
 # Agent Flow
 
-A live diagram of how the agents in the current space work together: the orchestrator on top, each agent or subagent it delegated to in its own box with its agent name and model, the line to whoever is working lit in that agent's color, and the messages agents send each other. A Timeline view shows the whole space as a sequence diagram. It follows the space you call it from. Plain terminals stay out of it.
+A live diagram of how the agents in the current space work together: the orchestrator on top, each agent or subagent it delegated to in its own box with its agent name and model, the line to whoever is working lit in that agent's color, and the messages agents send each other. A Map view places any number of agents by how they work together, always keeping the hierarchy, and a Timeline view shows the space as a sequence diagram. It follows the space you call it from. Plain terminals stay out of it.
 
 ![Agent Flow](preview.png)
+
+![Stages](stages.png)
+
+![Diagram](diagram.png)
 
 ![Timeline](timeline.png)
 
@@ -12,11 +16,12 @@ Everything is `JetBrains Mono`, 12px (header 13px semibold), on `theme().canvas`
 
 Top to bottom:
 
-1. **Header.** Left: the space's name, `·`, the lead's model. Right: `N RUNNING` in `working` color (`muted` at 0), a `Diagram` / `Timeline` switch (the shown one on `selected`) and, in an overlay, a `✕`. Below 340px wide the model drops out.
+1. **Header.** Left: the space's name, `·`, the lead's model. Right: `N RUNNING` in `working` color (`muted` at 0), a `Diagram` / `Map` / `Timeline` switch (the shown one on `selected`) and, in an overlay, a `✕`. Below 340px wide the model drops out.
 2. **Lead chips.** One chip per lead in this space, most urgent first: a 7px status dot, the program icon, `Agent · title` cut at 170px. The chosen one has `selected` as its background.
 3. **Body.** From 640px wide, a 226px detail panel on the left. To its right the flow, in one of two shapes:
    - **Diagram** (at least 500px of room). A 300px lead box with agent name and icon, model, title, status mark with the current tool, and `N tools this turn  ctx 122k`. Then a stem, `delegates to <models>`, a stem, a 20px fan, up to 4 child boxes (at most 250px; one per 150px of room). Under 170px a box drops the tool count and a subagent shows only its type (`audit`), with the agent's icon, one 18px lane per message route between two boxes (at most 3), a fan back, and a 300px `back to <agent>` box saying `waiting on 1 of 3` or `3 of 3 back`. More children than fit show as `+N more`. A lane is a line from one box's center to the other's, `▶` or `◀` at the receiver, and `OpenCode → Codex ×2` on it. A box also shows `↑2 ↓1` (messages to and from the lead) and up to 3 rows of what it delegated in turn: `└ ◐ rollback · Haiku 5.5`.
    - **List** (narrower, such as a 368px side panel, or after clicking `+N more`). The lead and `back to` boxes run full width and the children are stacked rows. A 1px rail runs down the left edge from the lead, with a 13px tick into each row. Sibling messages are lines of `⇄ OpenCode → Codex ×2` under the rows.
+   - **Map.** Takes the whole width (no detail panel). A line of `19 agents  12 running  9 direct routes` and an arrangement switch: `Auto`, `Tree`, `Stages`, `Radial`, `Organic`. Below, a 44px node per agent or subagent (168px wide, 136 under 700px of room, 112 under 480): status mark, icon, its terminal name or type, `↑2` for messages to its parent, and the model. An orchestrator has a 2px border. Parent and child join with a 1px curve, in the child's color while it works. Messages that aren't parent and child are 1.5px curves with an arrowhead and a pulsing dot in the sender's color; after 90 seconds, 1px dashed in `dim`. Under the map, up to 7 routes as `⇄ schema → api ×2`.
    - **Timeline.** A column per agent and subagent in the space (92px or more, the lead first, then those with traffic): name and model on top, a 1px lifeline down. Below, a 24px row per event, oldest on top: the time in a 64px gutter (from 560px of room), an arrow between two lifelines in the sender's color (`dim` for `came back`) and its label: `message`, the delegated task, or `came back`.
 4. **Terminals strip.** Only when the lead started plain terminals: `terminals  ›_ api-server  ›_ web-dev`, dim, no boxes.
 5. **Session log.** A 132px box (96px when the view is under 620px tall) titled `session log`: the last 6 rows (3 when short) of time, who, what. The time drops out under 500px wide.
@@ -36,6 +41,9 @@ Colors by model, from the theme: Opus `ansi5`, Sonnet `ansi3`, Haiku `ansi4`, Fa
 - **stale**: a subagent not marked finished and silent for 3 minutes: `no activity`, border in `border` color.
 - **There are no percentages.** Nothing reports how far along an agent is, so the bar only says running or finished. Tool counts are real, with `≥` when the transcript's tail didn't reach the start.
 - **Messages.** A route stays drawn for 10 minutes. For its first 90 seconds it's in the sender's color with a dot running along it; after that it's `dim`. Only who talked to whom shows, never what was said.
+- **The arrangement changes, the hierarchy doesn't.** `Tree`: a column per tier, a row per leaf. `Stages`: a lane per team, the orchestrator left, then the team's lead, then its members in columns `step 1`, `step 2`... by how many hands the work passed through; a child is always right of its parent. `Radial`: the chosen lead in the middle, each tier a ring. `Organic`: agents that talk are pulled together, freely inside a band per tier, so orchestrators stay on top and each tier stays under the last. `Auto` shows its pick (`Auto: Stages`): stages when work moves along a line (3 or more routes between workers with few loops), organic when it goes around, radial past 9 agents, otherwise a tree. So it rearranges as agents start talking, and nodes slide over 450ms. An orchestrator is never a step.
+- The chosen view and arrangement are remembered between starts, per copy.
+- A node that is an orchestrator picks it as lead on click; any other terminal node peeks.
 - **Timeline** covers every agent in the space, so flows that never touch the chosen lead show too, including two leads talking to each other.
 - **Clicks.** A child box opens it in the detail panel, or inline in list mode; again closes it. The lead box goes back to the lead. A chip picks a lead. `go to terminal` runs `agent.focus` and closes the overlay. `peek terminal`, terminal-strip entries and a second-tier row that is a terminal run `terminal.peek`. `+N more` shows every box as the list, and `back to the diagram` returns.
 - Closed in a hidden panel it doesn't scan. It scans every 3 seconds only while it's on screen.
@@ -50,7 +58,8 @@ One mod, `mods/agent-flow/`:
   - opencode: `~/.local/share/opencode/opencode.db` read-only, tables `session_v2` and `session_message`.
   - Codex: `~/.codex/state_*.sqlite` read-only, table `threads`; with no thread, the `model =` line of `config.toml`.
   - Messages, from the same files: a shell tool call matching `hc send <target>`, or Claude Code's `SendMessage`, gives `sends: [{t, to}]`; a `<hc from="t7 ...">` tag on an incoming message gives `recvs: [{t, from}]`, used only for senders with no transcript, such as Codex. A `to` is an address, a terminal name, a subagent id or a type, so it resolves against the agents in `main.js`; what doesn't resolve stays in the log.
-- `demo.js`: made-up data, shown with props `{ "demo": true }`: an orchestrator with mixed agents in every state, messages between siblings, a second tier and a second lead writing to the first. Its clock is frozen, so routes stay drawn. Add `"view": "timeline"` to open on the Timeline.
+- `shapes.js`: where each node sits on the Map. Pure geometry from `{key, parent}` nodes and `{from, to}` routes: `tree`, `stages`, `radial`, `organic`, and `choose` for Auto.
+- `examples/team.js` and `examples/platform.js`: example data, with props `{ "example": "team" }` (an orchestrator with mixed agents in every state, messages between siblings, a second tier, a second lead writing to the first) or `{ "example": "platform" }` (19 agents in three teams, three tiers deep, whose work moves along a pipeline without touching the orchestrator). Their clock is frozen, so routes stay drawn. `"view"` and `"shape"` props open a given view and arrangement. Nothing in them runs unless those props are given.
 - `flow.svg`: a tinted icon for anyone adding a tab bar button.
 - `mod.json`: `{ "place": "none", "title": "Agent Flow", "overlay": { "kind": "dialog", "width": 0.9, "height": 0.92 } }`.
 
@@ -77,6 +86,9 @@ The mod runs a program and reads files outside its folder, always locally and ne
 - Animate with `.frames` and `.loop`, not timers. `.loop` runs there and back.
 - Every clickable box needs its own `.id()` before `.on_click`.
 - **Elements are single use.** Building lifelines once and adding them to every row fails with `element div was already added to a parent`. `herdr-app check` doesn't see it when the failing view isn't the first one rendered: open every view in the app.
+- **Hierarchy first.** Forces and step ranks alone scatter tiers and can put a child before its parent. Give every shape the rule: bands per tier in `Organic`, `max(step, parent + 1)` in `Stages`. Keep drawing parent lines in every shape.
+- **Herdr interrupts a render that runs long** (`interrupted`, in the stack). `Organic` runs in render, so it does 90 passes, and its result is cached by a signature of nodes, routes and size. It's recomputed only when those change.
+- Curves use `window.paint_path` with `PathBuilder`: one stroked path per color, not one element per line. `.loop` can't follow a curve, so a live route pulses at its head.
 - Lanes and the Timeline place things with absolute `left` from the room computed from `on_size_change`, because a mod can't measure its children.
 - `.loop` runs there and back, so a dot goes both ways; the arrow says the direction.
 - Messages sent any other way (a file, a socket, a script calling `hc`) aren't seen.
@@ -85,8 +97,11 @@ The mod runs a program and reads files outside its folder, always locally and ne
 
 - `herdr-app check mods/agent-flow` passes and `herdr-app status` shows no errors.
 - `ctrl-shift-g` opens the overlay, and again closes it.
-- `herdr-app do tab.new --mod agent-flow --props '{"demo":true}'` shows four chips, and under `Claude Code` (Opus 5.5) `Ship the billing migration` the boxes `OpenCode` (`needs you`, `↑1 ↓1`, `explore` under it), `audit` (Sonnet 5.5, running), `Codex` (`gpt-5.5-codex`, running, `↓2`, `rollback` under it) and `search` (Haiku 5.5, done), lanes `audit → OpenCode` and `OpenCode → Codex ×2`, then `waiting on 2 of 4` and four entries in the terminals strip.
+- `herdr-app do tab.new --mod agent-flow --props '{"example":"team"}'` shows four chips, and under `Claude Code` (Opus 5.5) `Ship the billing migration` the boxes `OpenCode` (`needs you`, `↑1 ↓1`, `explore` under it), `audit` (Sonnet 5.5, running), `Codex` (`gpt-5.5-codex`, running, `↓2`, `rollback` under it) and `search` (Haiku 5.5, done), lanes `audit → OpenCode` and `OpenCode → Codex ×2`, then `waiting on 2 of 4` and four entries in the terminals strip.
 - Its Timeline has a column for each agent and a message from the `Sonnet 5.5` Claude Code, a second lead, to the Opus one.
+- `--props '{"example":"platform","view":"map"}'` shows `19 agents`, `Auto: Stages`, lanes for backend, frontend and qa, and columns up to `step 5`. Switching to `Organic` keeps both orchestrators on top and every worker below its team.
+- `Tree`, `Stages`, `Radial` and `Organic` all show a line from each parent to each child.
+- With 4 or more workers exchanging `hc send`, `Auto` changes arrangement by itself.
 - With two agents exchanging `hc send`, a lane or `↑↓` count appears within one scan and the Timeline gets a row each way.
 - With an agent working, the line from the lead to its box is its color from end to end, and a finished sibling's stays grey.
 - Selecting another space changes the title, chips and boxes; a space with no agents says `No agents in <space>`.

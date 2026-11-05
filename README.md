@@ -3,19 +3,24 @@
 A live diagram for the [Herdr](https://herdr.dev) desktop app that shows how the agents in the
 current space work together: the orchestrator, each agent or subagent it delegated to with its
 model, the messages they send each other, and what came back. It changes with the space you call
-it from.
+it from, and scales from one agent to a whole team.
 
-![Agent Flow](preview.png)
+![Map, Organic arrangement](preview.png)
 
-![Timeline](timeline.png)
+![Map, Stages arrangement](stages.png)
+
+| Diagram | Timeline |
+| --- | --- |
+| ![Diagram](diagram.png) | ![Timeline](timeline.png) |
 
 Install: copy `mods/agent-flow/` into `~/.config/herdr-app/mods/`, merge `keys.json` into yours,
 press `ctrl-shift-g`. Needs Node on PATH, and Node 22 or later for opencode and Codex models.
 [RECIPE.md](RECIPE.md) is the brief to build it from scratch.
 
-The picture shows it as a side panel, opened from a Flow button beside Graph, with the demo data
-(`props: { "demo": true }`, add `"view": "timeline"` for the second one). The key opens it as an overlay out of the box; the button lives in
-your own layout and tab bar, and RECIPE.md says how to add it.
+The pictures show it as a side panel, opened from a Flow button beside Graph, on example data
+that ships with the mod: `herdr-app do tab.new --mod agent-flow --props '{"example":"platform","view":"map"}'`
+(or `"team"`). With no such props it shows your live agents. The key opens it as an overlay out of
+the box; the button lives in your own layout and tab bar, and RECIPE.md says how to add it.
 
 ## What it shows
 
@@ -31,6 +36,11 @@ your own layout and tab bar, and RECIPE.md says how to add it.
 - **Second tier.** What each agent delegated in turn, as rows inside its box.
 - **Timeline.** A sequence diagram of the whole space, one column per agent, so flows that never
   touch the orchestrator show too, like two orchestrators writing to each other.
+- **Map.** Any number of agents at any depth, arranged by how they work. `Tree` by tier, `Stages`
+  by team and by the order work moves through it, `Radial` in rings around the orchestrator,
+  `Organic` with agents that talk pulled together. The arrangement changes, the hierarchy doesn't:
+  orchestrators stay first and a parent always comes before its children. `Auto` picks one from
+  who's talking to whom and rearranges as that changes.
 - **Plain terminals apart.** A dev server the lead started sits in a list under the diagram,
   never as an agent.
 - **A session log** of tool calls, delegations and status changes.
