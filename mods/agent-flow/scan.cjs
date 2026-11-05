@@ -51,8 +51,31 @@ function hint(name, input = {}) {
   return "";
 }
 
+// Who a tool call is talking to: `hc send <target>` from a shell, or Claude Code's
+// SendMessage. Only the target leaves here, never the message.
+function target(name, input = {}) {
+  if (name === "SendMessage" && input.to) return String(input.to);
+  if (typeof input.command !== "string") return null;
+  const hit = /(?:^|[\s;&|/\\"'])hc(?:\.exe)?["']?\s+send\s+(?:--?[a-z-]+\s+)*["']?([\w:./-]+)/i.exec(input.command);
+  return hit ? hit[1] : null;
+}
+
+// Messages arrive tagged <hc from="t7 review">. Only the address leaves here.
+function heard(out, text, at) {
+  for (const hit of String(text).matchAll(/<hc from=\\?"([^"\\\s]+)/g)) out.recvs.push({ t: at, from: hit[1] });
+}
+
+function note(out, item, name, input, at) {
+  const to = target(name, input);
+  if (!to) return;
+  item.name = "Send";
+  item.hint = to;
+  item.to = to;
+  out.sends.push({ t: at, to });
+}
+
 function digest(rows) {
-  const out = { model: null, ctx: 0, tools: 0, turnAt: 0, lastAt: 0, now: null, recent: [] };
+  const out = { model: null, ctx: 0, tools: 0, turnAt: 0, lastAt: 0, now: null, recent: [], sends: [], recvs: [] };
   const open = new Map();
   const agents = new Map();
   for (const r of rows) {
@@ -67,6 +90,7 @@ function digest(rows) {
       for (const b of Array.isArray(c) ? c : []) {
         if (b.type !== "tool_use") continue;
         const item = { t: at, name: b.name, hint: hint(b.name, b.input) };
+        note(out, item, b.name, b.input, at);
         out.tools++;
         out.recent.push(item);
         open.set(b.id, item);
@@ -77,6 +101,8 @@ function digest(rows) {
       }
     } else if (r.type === "user") {
       const results = Array.isArray(c) ? c.filter((b) => b.type === "tool_result") : [];
+      if (typeof c === "string") heard(out, c, at);
+      else for (const b of Array.isArray(c) ? c : []) if (b.type === "text") heard(out, b.text, at);
       for (const b of results) {
         open.delete(b.tool_use_id);
         if (agents.has(b.tool_use_id)) {
@@ -89,6 +115,8 @@ function digest(rows) {
   const pending = [...open.values()].pop();
   out.now = pending ? { name: pending.name, hint: pending.hint } : null;
   out.recent = out.recent.slice(-24);
+  out.sends = out.sends.slice(-20);
+  out.recvs = out.recvs.slice(-20);
   return out;
 }
 
@@ -119,7 +147,7 @@ function subagents(file) {
     return {
       id: name.replace(/^agent-|\.jsonl$/g, ""), type: meta.agentType ?? "agent",
       description: meta.description ?? "", status, model: d.model ?? meta.pickedEffortModel ?? null,
-      tools: d.tools, more: partial, ctx: d.ctx, now: d.now, recent: d.recent.slice(-8),
+      tools: d.tools, more: partial, ctx: d.ctx, now: d.now, recent: d.recent.slice(-8), sends: d.sends,
       startedAt: Math.round(born), lastAt: Math.round(seen),
     };
   });
@@ -150,10 +178,10 @@ function perFolder(rows, folders, dirOf) {
 }
 
 function digestOpencode(rows) {
-  const out = { model: null, ctx: 0, tools: 0, turnAt: 0, lastAt: 0, now: null, recent: [] };
+  const out = { model: null, ctx: 0, tools: 0, turnAt: 0, lastAt: 0, now: null, recent: [], sends: [], recvs: [] };
   for (const r of rows) {
     out.lastAt = Math.max(out.lastAt, r.time_created);
-    if (r.type === "user") { out.tools = 0; out.turnAt = r.time_created; out.now = null; }
+    if (r.type === "user") { out.tools = 0; out.turnAt = r.time_created; out.now = null; heard(out, r.data, r.time_created); }
     if (r.type !== "assistant") continue;
     let d;
     try { d = JSON.parse(r.data); } catch { continue; }
@@ -163,6 +191,7 @@ function digestOpencode(rows) {
       const given = typeof b.state?.input === "object" ? b.state.input ?? {} : {};
       const name = String(b.name)[0].toUpperCase() + String(b.name).slice(1);
       const item = { t: b.time?.created ?? r.time_created, name, hint: hint(name, { ...given, file_path: given.filePath ?? given.file_path ?? (/^(read|edit|write)/i.test(name) ? given.path : undefined) }) };
+      note(out, item, name, given, item.t);
       out.tools++;
       out.recent.push(item);
       out.now = /run|stream|pend/.test(b.state?.status ?? "") ? item : null;
@@ -170,6 +199,8 @@ function digestOpencode(rows) {
   }
   out.now = out.now ? { name: out.now.name, hint: out.now.hint } : null;
   out.recent = out.recent.slice(-24);
+  out.sends = out.sends.slice(-20);
+  out.recvs = out.recvs.slice(-20);
   return out;
 }
 
@@ -188,7 +219,7 @@ function opencode(folders) {
       const subs = children.all(r.id, MAX_SUBS).map((k) => {
         const d = load(k.id);
         const status = k.time_idle != null ? "done" : now - k.time_updated > QUIET_MS ? "stale" : "working";
-        return { id: k.id, type: k.agent ?? "subagent", description: k.title ?? "", status, model: d.model, tools: d.tools, more: false, ctx: 0, now: d.now, recent: d.recent.slice(-8), startedAt: k.time_created, lastAt: k.time_updated };
+        return { id: k.id, type: k.agent ?? "subagent", description: k.title ?? "", status, model: d.model, tools: d.tools, more: false, ctx: 0, now: d.now, recent: d.recent.slice(-8), sends: d.sends, startedAt: k.time_created, lastAt: k.time_updated };
       });
       return { id: r.id, agent: "opencode", cwd: r.directory, ...load(r.id), lastAt: r.time_updated, more: false, subs, total: subs.length };
     });
@@ -198,7 +229,7 @@ function opencode(folders) {
 function codex(folders) {
   if (!folders.length) return [];
   const home = process.env.CODEX_HOME || path.join(os.homedir(), ".codex");
-  const blank = { tools: null, ctx: 0, turnAt: 0, now: null, recent: [], more: false, subs: [], total: 0 };
+  const blank = { tools: null, ctx: 0, turnAt: 0, now: null, recent: [], sends: [], recvs: [], more: false, subs: [], total: 0 };
   let files = [];
   try { files = fs.readdirSync(home).filter((n) => /^state_\d+\.sqlite$/.test(n)).sort(); } catch { return []; }
   let rows = [];

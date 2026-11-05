@@ -1,8 +1,10 @@
 # Agent Flow
 
-A live diagram of how the agents in the current space work together: the orchestrator on top, each agent or subagent it delegated to in its own box with its agent name and model, and the line to whoever is working lit in that agent's color. It follows the space you call it from. Plain terminals stay out of the diagram.
+A live diagram of how the agents in the current space work together: the orchestrator on top, each agent or subagent it delegated to in its own box with its agent name and model, the line to whoever is working lit in that agent's color, and the messages agents send each other. A Timeline view shows the whole space as a sequence diagram. It follows the space you call it from. Plain terminals stay out of it.
 
 ![Agent Flow](preview.png)
+
+![Timeline](timeline.png)
 
 ## What you see
 
@@ -10,11 +12,12 @@ Everything is `JetBrains Mono`, 12px (header 13px semibold), on `theme().canvas`
 
 Top to bottom:
 
-1. **Header.** Left: the space's name, `·`, the lead's model. Right: `N RUNNING` in `working` color (`muted` at 0) and, in an overlay, a `✕`. Below 340px wide the model drops out.
+1. **Header.** Left: the space's name, `·`, the lead's model. Right: `N RUNNING` in `working` color (`muted` at 0), a `Diagram` / `Timeline` switch (the shown one on `selected`) and, in an overlay, a `✕`. Below 340px wide the model drops out.
 2. **Lead chips.** One chip per lead in this space, most urgent first: a 7px status dot, the program icon, `Agent · title` cut at 170px. The chosen one has `selected` as its background.
 3. **Body.** From 640px wide, a 226px detail panel on the left. To its right the flow, in one of two shapes:
-   - **Diagram** (at least 500px of room). A 300px lead box with agent name and icon, model, title, status mark with the current tool, and `N tools this turn  ctx 122k`. Then a stem, `delegates to <models>`, a stem, a 20px fan, up to 4 child boxes (at most 250px; one per 150px of room). Under 170px a box drops the tool count and a subagent shows only its type (`audit`), with the agent's icon, a fan back, and a 300px `back to <agent>` box saying `waiting on 1 of 3` or `3 of 3 back`. More children than fit show as `+N more`.
-   - **List** (narrower, such as a 368px side panel). The lead and `back to` boxes run full width and the children are stacked rows. A 1px rail runs down the left edge from the lead, with a 13px tick into each row.
+   - **Diagram** (at least 500px of room). A 300px lead box with agent name and icon, model, title, status mark with the current tool, and `N tools this turn  ctx 122k`. Then a stem, `delegates to <models>`, a stem, a 20px fan, up to 4 child boxes (at most 250px; one per 150px of room). Under 170px a box drops the tool count and a subagent shows only its type (`audit`), with the agent's icon, one 18px lane per message route between two boxes (at most 3), a fan back, and a 300px `back to <agent>` box saying `waiting on 1 of 3` or `3 of 3 back`. More children than fit show as `+N more`. A lane is a line from one box's center to the other's, `▶` or `◀` at the receiver, and `OpenCode → Codex ×2` on it. A box also shows `↑2 ↓1` (messages to and from the lead) and up to 3 rows of what it delegated in turn: `└ ◐ rollback · Haiku 5.5`.
+   - **List** (narrower, such as a 368px side panel, or after clicking `+N more`). The lead and `back to` boxes run full width and the children are stacked rows. A 1px rail runs down the left edge from the lead, with a 13px tick into each row. Sibling messages are lines of `⇄ OpenCode → Codex ×2` under the rows.
+   - **Timeline.** A column per agent and subagent in the space (92px or more, the lead first, then those with traffic): name and model on top, a 1px lifeline down. Below, a 24px row per event, oldest on top: the time in a 64px gutter (from 560px of room), an arrow between two lifelines in the sender's color (`dim` for `came back`) and its label: `message`, the delegated task, or `came back`.
 4. **Terminals strip.** Only when the lead started plain terminals: `terminals  ›_ api-server  ›_ web-dev`, dim, no boxes.
 5. **Session log.** A 132px box (96px when the view is under 620px tall) titled `session log`: the last 6 rows (3 when short) of time, who, what. The time drops out under 500px wide.
 
@@ -32,7 +35,9 @@ Colors by model, from the theme: Opus `ansi5`, Sonnet `ansi3`, Haiku `ansi4`, Fa
 - **idle**: `○`, empty bar.
 - **stale**: a subagent not marked finished and silent for 3 minutes: `no activity`, border in `border` color.
 - **There are no percentages.** Nothing reports how far along an agent is, so the bar only says running or finished. Tool counts are real, with `≥` when the transcript's tail didn't reach the start.
-- **Clicks.** A child box opens it in the detail panel, or inline in list mode; again closes it. The lead box goes back to the lead. A chip picks a lead. `go to terminal` runs `agent.focus` and closes the overlay. `peek terminal` and terminal-strip entries run `terminal.peek`.
+- **Messages.** A route stays drawn for 10 minutes. For its first 90 seconds it's in the sender's color with a dot running along it; after that it's `dim`. Only who talked to whom shows, never what was said.
+- **Timeline** covers every agent in the space, so flows that never touch the chosen lead show too, including two leads talking to each other.
+- **Clicks.** A child box opens it in the detail panel, or inline in list mode; again closes it. The lead box goes back to the lead. A chip picks a lead. `go to terminal` runs `agent.focus` and closes the overlay. `peek terminal`, terminal-strip entries and a second-tier row that is a terminal run `terminal.peek`. `+N more` shows every box as the list, and `back to the diagram` returns.
 - Closed in a hidden panel it doesn't scan. It scans every 3 seconds only while it's on screen.
 
 ## Built from
@@ -44,7 +49,8 @@ One mod, `mods/agent-flow/`:
   - Claude Code: `~/.claude/sessions/<pid>.json` for live sessions (`CLAUDE_CONFIG_DIR` moves it), the tail of `~/.claude/projects/<folder-slug>/<session>.jsonl`, and `<session>/subagents/agent-*.jsonl` with `.meta.json` (`agentType`, `description`, `finished`).
   - opencode: `~/.local/share/opencode/opencode.db` read-only, tables `session_v2` and `session_message`.
   - Codex: `~/.codex/state_*.sqlite` read-only, table `threads`; with no thread, the `model =` line of `config.toml`.
-- `demo.js`: made-up data, shown with props `{ "demo": true }`: an orchestrator with mixed agents in every state.
+  - Messages, from the same files: a shell tool call matching `hc send <target>`, or Claude Code's `SendMessage`, gives `sends: [{t, to}]`; a `<hc from="t7 ...">` tag on an incoming message gives `recvs: [{t, from}]`, used only for senders with no transcript, such as Codex. A `to` is an address, a terminal name, a subagent id or a type, so it resolves against the agents in `main.js`; what doesn't resolve stays in the log.
+- `demo.js`: made-up data, shown with props `{ "demo": true }`: an orchestrator with mixed agents in every state, messages between siblings, a second tier and a second lead writing to the first. Its clock is frozen, so routes stay drawn. Add `"view": "timeline"` to open on the Timeline.
 - `flow.svg`: a tinted icon for anyone adding a tab bar button.
 - `mod.json`: `{ "place": "none", "title": "Agent Flow", "overlay": { "kind": "dialog", "width": 0.9, "height": 0.92 } }`.
 
@@ -54,7 +60,7 @@ Herdr functions: `agents`, `terminals`, `panes`, `spaces`, `focused`, `theme`, `
 
 It works three ways: as an overlay (the key), as a pane (`pane.split {direction, mod: "agent-flow"}`), or as a block in a layout. For a side panel beside Files and Changes, add `{ "id": "flow", "type": "block", "content": { "mod": "agent-flow" } }` to the `panel-body` stack in a layout of your own, and a button in a cloned `tabs` mod, as in the preview, that runs `layout.select {stack: "panel-body", child: "flow"}` and `layout.show {id: "panel"}`.
 
-The mod runs a program and reads files outside its folder, always locally and never over the network. `scan.cjs` prints tool names, short hints (a file's name, a Bash description, a search pattern, the start of a command that has no description) and subagent descriptions. It never prints prompts or tool output. Those hints do show up on screen.
+The mod runs a program and reads files outside its folder, always locally and never over the network. `scan.cjs` prints tool names, short hints (a file's name, a Bash description, a search pattern, the start of a command that has no description) and subagent descriptions. For a message it prints the target only. It never prints prompts or tool output. Those hints do show up on screen.
 
 ## Watch out
 
@@ -70,12 +76,18 @@ The mod runs a program and reads files outside its folder, always locally and ne
 - Codex shows no tools. opencode subagents and Codex threads were written from the schema and weren't exercised on real data.
 - Animate with `.frames` and `.loop`, not timers. `.loop` runs there and back.
 - Every clickable box needs its own `.id()` before `.on_click`.
+- **Elements are single use.** Building lifelines once and adding them to every row fails with `element div was already added to a parent`. `herdr-app check` doesn't see it when the failing view isn't the first one rendered: open every view in the app.
+- Lanes and the Timeline place things with absolute `left` from the room computed from `on_size_change`, because a mod can't measure its children.
+- `.loop` runs there and back, so a dot goes both ways; the arrow says the direction.
+- Messages sent any other way (a file, a socket, a script calling `hc`) aren't seen.
 
 ## Done when
 
 - `herdr-app check mods/agent-flow` passes and `herdr-app status` shows no errors.
 - `ctrl-shift-g` opens the overlay, and again closes it.
-- `herdr-app do tab.new --mod agent-flow --props '{"demo":true}'` shows four chips, and under `Claude Code` (Opus 5.5) `Ship the billing migration` the boxes `OpenCode` (`needs you`), `audit` (Sonnet 5.5, running), `Codex` (`gpt-5.5-codex`, running) and `search` (Haiku 5.5, done), then `waiting on 2 of 4` and four entries in the terminals strip.
+- `herdr-app do tab.new --mod agent-flow --props '{"demo":true}'` shows four chips, and under `Claude Code` (Opus 5.5) `Ship the billing migration` the boxes `OpenCode` (`needs you`, `↑1 ↓1`, `explore` under it), `audit` (Sonnet 5.5, running), `Codex` (`gpt-5.5-codex`, running, `↓2`, `rollback` under it) and `search` (Haiku 5.5, done), lanes `audit → OpenCode` and `OpenCode → Codex ×2`, then `waiting on 2 of 4` and four entries in the terminals strip.
+- Its Timeline has a column for each agent and a message from the `Sonnet 5.5` Claude Code, a second lead, to the Opus one.
+- With two agents exchanging `hc send`, a lane or `↑↓` count appears within one scan and the Timeline gets a row each way.
 - With an agent working, the line from the lead to its box is its color from end to end, and a finished sibling's stays grey.
 - Selecting another space changes the title, chips and boxes; a space with no agents says `No agents in <space>`.
 - A plain terminal started with `hc run` by an agent appears in the terminals strip and never as a box.
