@@ -10,6 +10,10 @@ Install: copy `mods/agent-flow/` into `~/.config/herdr-app/mods/`, merge `keys.j
 press `ctrl-shift-g`. Needs Node on PATH, and Node 22 or later for opencode and Codex models.
 [RECIPE.md](RECIPE.md) is the brief to build it from scratch.
 
+The picture shows it as a side panel, opened from a Flow button beside Graph, with the demo data
+(`props: { "demo": true }`). The key opens it as an overlay out of the box; the button lives in
+your own layout and tab bar, and RECIPE.md says how to add it.
+
 ## What it shows
 
 - **Agent and model on every box.** Claude Code, opencode and Codex show their model; other
@@ -31,3 +35,7 @@ network. On screen you get tool names and short hints such as a file name or the
 command, never prompts or tool output.
 
 These are private formats, so an agent's update can leave a box at `model unknown`.
+
+## License
+
+[MIT](LICENSE).

@@ -13,7 +13,7 @@ Top to bottom:
 1. **Header.** Left: the space's name, `·`, the lead's model. Right: `N RUNNING` in `working` color (`muted` at 0) and, in an overlay, a `✕`. Below 340px wide the model drops out.
 2. **Lead chips.** One chip per lead in this space, most urgent first: a 7px status dot, the program icon, `Agent · title` cut at 170px. The chosen one has `selected` as its background.
 3. **Body.** From 640px wide, a 226px detail panel on the left. To its right the flow, in one of two shapes:
-   - **Diagram** (at least 500px of room). A 300px lead box with agent name and icon, model, title, status mark with the current tool, and `N tools this turn  ctx 122k`. Then a stem, `delegates to <models>`, a stem, a 20px fan, up to 4 child boxes (at most 250px, about 170px each decides how many fit), a fan back, and a 300px `back to <agent>` box saying `waiting on 1 of 3` or `3 of 3 back`. More children than fit show as `+N more`.
+   - **Diagram** (at least 500px of room). A 300px lead box with agent name and icon, model, title, status mark with the current tool, and `N tools this turn  ctx 122k`. Then a stem, `delegates to <models>`, a stem, a 20px fan, up to 4 child boxes (at most 250px; one per 150px of room). Under 170px a box drops the tool count and a subagent shows only its type (`audit`), with the agent's icon, a fan back, and a 300px `back to <agent>` box saying `waiting on 1 of 3` or `3 of 3 back`. More children than fit show as `+N more`.
    - **List** (narrower, such as a 368px side panel). The lead and `back to` boxes run full width and the children are stacked rows. A 1px rail runs down the left edge from the lead, with a 13px tick into each row.
 4. **Terminals strip.** Only when the lead started plain terminals: `terminals  ›_ api-server  ›_ web-dev`, dim, no boxes.
 5. **Session log.** A 132px box (96px when the view is under 620px tall) titled `session log`: the last 6 rows (3 when short) of time, who, what. The time drops out under 500px wide.
@@ -44,7 +44,7 @@ One mod, `mods/agent-flow/`:
   - Claude Code: `~/.claude/sessions/<pid>.json` for live sessions (`CLAUDE_CONFIG_DIR` moves it), the tail of `~/.claude/projects/<folder-slug>/<session>.jsonl`, and `<session>/subagents/agent-*.jsonl` with `.meta.json` (`agentType`, `description`, `finished`).
   - opencode: `~/.local/share/opencode/opencode.db` read-only, tables `session_v2` and `session_message`.
   - Codex: `~/.codex/state_*.sqlite` read-only, table `threads`; with no thread, the `model =` line of `config.toml`.
-- `demo.js`: made-up data, shown with props `{ "demo": true }`.
+- `demo.js`: made-up data, shown with props `{ "demo": true }`: an orchestrator with mixed agents in every state.
 - `flow.svg`: a tinted icon for anyone adding a tab bar button.
 - `mod.json`: `{ "place": "none", "title": "Agent Flow", "overlay": { "kind": "dialog", "width": 0.9, "height": 0.92 } }`.
 
@@ -52,7 +52,7 @@ One mod, `mods/agent-flow/`:
 
 Herdr functions: `agents`, `terminals`, `panes`, `spaces`, `focused`, `theme`, `props`, `run`, `exec`, `appHome`, `closeOverlay`, `layout`. Commands: `agent.focus`, `terminal.peek`. A terminal is an agent when it has a `report` or `program.agent`; children are terminals whose `parent` is the lead.
 
-It works three ways: as an overlay (the key), as a pane (`pane.split {direction, mod: "agent-flow"}`), or as a block in a layout. For a side panel beside Files and Changes, add `{ "id": "flow", "type": "block", "content": { "mod": "agent-flow" } }` to the `panel-body` stack in a layout of your own, and a button in a cloned `tabs` mod that runs `layout.select {stack: "panel-body", child: "flow"}` and `layout.show {id: "panel"}`.
+It works three ways: as an overlay (the key), as a pane (`pane.split {direction, mod: "agent-flow"}`), or as a block in a layout. For a side panel beside Files and Changes, add `{ "id": "flow", "type": "block", "content": { "mod": "agent-flow" } }` to the `panel-body` stack in a layout of your own, and a button in a cloned `tabs` mod, as in the preview, that runs `layout.select {stack: "panel-body", child: "flow"}` and `layout.show {id: "panel"}`.
 
 The mod runs a program and reads files outside its folder, always locally and never over the network. `scan.cjs` prints tool names, short hints (a file's name, a Bash description, a search pattern, the start of a command that has no description) and subagent descriptions. It never prints prompts or tool output. Those hints do show up on screen.
 
@@ -75,7 +75,7 @@ The mod runs a program and reads files outside its folder, always locally and ne
 
 - `herdr-app check mods/agent-flow` passes and `herdr-app status` shows no errors.
 - `ctrl-shift-g` opens the overlay, and again closes it.
-- `herdr-app do tab.new --mod agent-flow --props '{"demo":true}'` shows three chips, and under `Claude Code · Fix the login flow` the boxes `Claude Code · audit` (Opus 5.5), `OpenCode` (`deepseek-v4.1-flash:free`) and `Claude Code · search` (Haiku 5.5, done), then `waiting on 2 of 3` and `terminals ›_ api-server ›_ web-dev`.
+- `herdr-app do tab.new --mod agent-flow --props '{"demo":true}'` shows four chips, and under `Claude Code` (Opus 5.5) `Ship the billing migration` the boxes `OpenCode` (`needs you`), `audit` (Sonnet 5.5, running), `Codex` (`gpt-5.5-codex`, running) and `search` (Haiku 5.5, done), then `waiting on 2 of 4` and four entries in the terminals strip.
 - With an agent working, the line from the lead to its box is its color from end to end, and a finished sibling's stays grey.
 - Selecting another space changes the title, chips and boxes; a space with no agents says `No agents in <space>`.
 - A plain terminal started with `hc run` by an agent appears in the terminals strip and never as a box.

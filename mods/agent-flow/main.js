@@ -299,16 +299,18 @@ export default class AgentFlow extends View {
   kidBox(k, t, width) {
     const quiet = k.status === "stale";
     const color = quiet ? t.border : k.color;
+    const tight = width < 170; // four boxes side by side: drop what the detail panel repeats
+    const name = k.address || tight ? (k.address ? k.agent : k.title) : `${k.agent} · ${k.title}`;
     return v_flex().id(`kid-${k.id}`).w_full().max_w(KID_MAX).p(8).gap(4).items_center().bg(t.background)
       .border(this.kid === k.id ? 2 : 1).border_color(color).cursor_pointer()
       .hover((s) => s.bg(t.hover))
       .on_click((_e, cx) => { this.kid = this.kid === k.id ? null : k.id; cx.notify(); })
-      .child(this.who(k.address ? k.agent : `${k.agent} · ${k.title}`, k.model, k.program, k.color, t))
+      .child(this.who(name, k.model, k.program, k.color, t))
       .child(this.bar(k.status, k.color, t, width))
       .child(div().w_full().text_center().truncate().text_color(t.muted).child(k.now ? toolLine(k.now) : k.sub || " "))
       .child(h_flex().gap(6).items_center().text_color(t.dim)
         .child(this.mark(k.status, t)).child(stateWord(k.status))
-        .when(k.tools != null, (e) => e.child(`· ${count(k.tools, k.more)}`)));
+        .when(k.tools != null && !tight, (e) => e.child(`· ${count(k.tools, k.more)}`)));
   }
 
   backBox(lead, session, kids, t, full) {
@@ -371,7 +373,7 @@ export default class AgentFlow extends View {
         .child(h_flex().w_full().child(this.stem(t.border, 4)))
         .child(this.backBox(lead, session, kids, t, true));
     }
-    const shown = kids.slice(0, Math.max(1, Math.min(4, Math.floor(room / 170))));
+    const shown = kids.slice(0, Math.max(1, Math.min(4, Math.floor(room / 150))));
     const low = this.height < SHORT;
     const trunk = shown.find((k) => k.status === "working")?.color ?? t.border;
     return flow.child(this.stem(trunk, low ? 4 : 14))
