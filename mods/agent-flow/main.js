@@ -751,7 +751,8 @@ export default class AgentFlow extends View {
     const kids = this.kids(lead, list, sessions, t);
     const g = graph(list, sessions, t);
     const mine = plain.filter((k) => k.parent === lead.address);
-    const working = kids.filter((k) => k.status === "working").length;
+    // Every agent and subagent of the space at work, the lead included; the same count as the Map's.
+    const working = g.nodes.filter((n) => n.status === "working").length;
     const wide = this.width >= 640;
     const narrow = this.width < NARROW;
     const beside = wide && this.view !== "map";
