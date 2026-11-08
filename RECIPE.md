@@ -53,10 +53,11 @@ Colors by model, from the theme: Opus `ansi5`, Sonnet `ansi3`, Haiku `ansi4`, Fa
 One mod, `mods/agent-flow/`:
 
 - `main.js`: the view.
-- `scan.cjs`: a Node script run by `exec("node", ["--no-warnings", <path>, "opencode=<folder>", "codex=<folder>", ...])`, one argument per terminal running that agent. It prints JSON and reads:
+- `scan.cjs`: a Node script run by `exec("node", ["--no-warnings", <path>, "opencode=<folder>", "codex=<folder>", "omp=<folder>", ...])`, one argument per terminal running that agent. It prints JSON and reads:
   - Claude Code: `~/.claude/sessions/<pid>.json` for live sessions (`CLAUDE_CONFIG_DIR` moves it), the tail of `~/.claude/projects/<folder-slug>/<session>.jsonl`, and `<session>/subagents/agent-*.jsonl` with `.meta.json` (`agentType`, `description`, `finished`).
   - opencode: `~/.local/share/opencode/opencode.db` read-only, tables `session_v2` and `session_message`.
   - Codex: `~/.codex/state_*.sqlite` read-only, table `threads`; with no thread, the `model =` line of `config.toml`.
+  - Oh My Pi: the newest `~/.omp/agent/sessions/<folder>/*.jsonl` (`PI_CODING_AGENT_DIR` moves it), the folder named after the cwd: `-Code-x` under the home folder, `--private-tmp--` outside it. Its tail gives the model of the last assistant message, or of the last `model_change` before any reply. A terminal reporting `pi` counts as `omp`.
   - Messages, from the same files: a shell tool call matching `hc send <target>`, or Claude Code's `SendMessage`, gives `sends: [{t, to}]`; a `<hc from="t7 ...">` tag on an incoming message gives `recvs: [{t, from}]`, used only for senders with no transcript, such as Codex. A `to` is an address, a terminal name, a subagent id or a type, so it resolves against the agents in `main.js`; what doesn't resolve stays in the log.
 - `shapes.js`: where each node sits on the Map. Pure geometry from `{key, parent}` nodes and `{from, to}` routes: `tree`, `stages`, `radial`, `organic`, and `choose` for Auto.
 - `examples/team.js` and `examples/platform.js`: example data, with props `{ "example": "team" }` (an orchestrator with mixed agents in every state, messages between siblings, a second tier, a second lead writing to the first) or `{ "example": "platform" }` (19 agents in three teams, three tiers deep, whose work moves along a pipeline without touching the orchestrator). Their clock is frozen, so routes stay drawn. `"view"` and `"shape"` props open a given view and arrangement. Nothing in them runs unless those props are given.

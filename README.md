@@ -24,8 +24,8 @@ the box; the button lives in your own layout and tab bar, and RECIPE.md says how
 
 ## What it shows
 
-- **Agent and model on every box.** Claude Code, opencode and Codex show their model; other
-  agents show their name and status.
+- **Agent and model on every box.** Claude Code, opencode, Codex and Oh My Pi show their model;
+  other agents show their name and status.
 - **Subagents.** Agents started with `hc run`, and the subagents Claude Code and opencode run
   inside their own process, which have no terminal of their own.
 - **Who's working.** The whole line from the orchestrator to a working agent lights up in its
@@ -49,9 +49,10 @@ the box; the button lives in your own layout and tab bar, and RECIPE.md says how
 
 The mod runs `node mods/agent-flow/scan.cjs` every 3 seconds while it's on screen, and only
 reads local files: Claude Code's session transcripts in `~/.claude`, opencode's database in
-`~/.local/share/opencode` and Codex's state in `~/.codex`, the last two read-only. It reaches no
-network. On screen you get tool names and short hints such as a file name or the start of a
-command, never prompts or tool output. Messages are seen through `hc send`, Claude Code's
+`~/.local/share/opencode`, Codex's state in `~/.codex` and Oh My Pi's session files in
+`~/.omp/agent/sessions`, the last three read-only. It reaches no network. On screen you get
+tool names and short hints such as a file name or the start of a command, never prompts or
+tool output. Messages are seen through `hc send`, Claude Code's
 `SendMessage` and the tags `hc` adds on arrival; for those it keeps the target and the sender, not
 the text.
 

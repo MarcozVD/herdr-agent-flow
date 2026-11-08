@@ -246,6 +246,41 @@ function codex(folders) {
   return model ? folders.map((cwd, i) => ({ ...blank, id: `codex-${i}`, agent: "codex", cwd, model, lastAt: 0 })) : [];
 }
 
+// Oh My Pi: one JSONL per session in ~/.omp/agent/sessions/<folder>/, the folder named
+// after the cwd ("-Code-x" under home, "--private-tmp--" outside it). The model is the
+// last assistant message's, or the last model_change before any reply.
+function omp(folders) {
+  if (!folders.length) return [];
+  const home = os.homedir();
+  const base = path.join(process.env.PI_CODING_AGENT_DIR || path.join(home, ".omp", "agent"), "sessions");
+  const blank = { tools: null, ctx: 0, turnAt: 0, now: null, recent: [], sends: [], recvs: [], more: false, subs: [], total: 0 };
+  const used = new Set();
+  const out = [];
+  for (const cwd of folders) {
+    const name = cwd === home ? "-"
+      : cwd.startsWith(`${home}/`) ? `-${cwd.slice(home.length + 1).replace(/\//g, "-")}`
+      : `--${cwd.replace(/^\//, "").replace(/\//g, "-")}--`;
+    let files = [];
+    try {
+      files = fs.readdirSync(path.join(base, name)).filter((n) => n.endsWith(".jsonl"))
+        .map((n) => path.join(base, name, n)).filter((f) => !used.has(f))
+        .map((f) => ({ f, m: fs.statSync(f).mtimeMs })).sort((a, b) => b.m - a.m);
+    } catch { continue; }
+    const pick = files[0];
+    if (!pick) continue;
+    used.add(pick.f);
+    let model = null;
+    try {
+      for (const r of tail(pick.f, SUB_TAIL).rows) {
+        if (r.type === "message" && r.message?.role === "assistant" && r.message.model) model = r.message.model;
+        else if (r.type === "model_change" && r.model) model = r.model.split("/").pop();
+      }
+    } catch { /* the file vanished mid-read */ }
+    out.push({ ...blank, id: path.basename(pick.f, ".jsonl"), agent: "omp", cwd, model, lastAt: Math.round(pick.m) });
+  }
+  return out;
+}
+
 const sessions = [];
 let dir = [];
 try { dir = fs.readdirSync(path.join(root, "sessions")); } catch { /* no live sessions */ }
@@ -262,6 +297,6 @@ for (const name of dir) {
   } catch { /* a transcript vanished mid-read; the next scan sees the truth */ }
 }
 for (const s of sessions) s.agent = "claude-code";
-sessions.push(...opencode(wanted("opencode")), ...codex(wanted("codex")));
+sessions.push(...opencode(wanted("opencode")), ...codex(wanted("codex")), ...omp(wanted("omp")));
 sessions.sort((a, b) => b.lastAt - a.lastAt);
 process.stdout.write(JSON.stringify({ sessions }));

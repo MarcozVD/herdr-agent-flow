@@ -28,7 +28,7 @@ const SHAPE_NAMES = { auto: "Auto", tree: "Tree", stages: "Stages", radial: "Rad
 const NODE_H = 44;
 const SPIN = ["◐", "◓", "◑", "◒"];
 const RANK = { blocked: 0, working: 1, done: 2, idle: 3 };
-const SCANNED = ["opencode", "codex"]; // agents whose folder scan.cjs must be told
+const SCANNED = ["opencode", "codex", "omp"]; // agents whose folder scan.cjs must be told
 
 function modelName(m) {
   const hit = /claude-([a-z]+)-(\d{1,2})(?:-(\d{1,2}))?(?!\d)/.exec(m ?? "");
@@ -66,7 +66,7 @@ const norm = (p) => (p ?? "").replace(/\\/g, "/").replace(/\/+$/, "").toLowerCas
 
 function appOf(k) {
   const app = k.report?.app ?? k.program?.key ?? null;
-  return app === "claude" ? "claude-code" : app;
+  return app === "claude" ? "claude-code" : app === "pi" ? "omp" : app;
 }
 
 const isAgent = (k) => !!(k.report || k.program?.agent);
