@@ -113,3 +113,8 @@ test("model names and colors", () => {
   assert.equal(M.modelName("gpt-5.5-codex"), "gpt-5.5-codex");
   assert.notEqual(M.tone(null, t, "codex"), M.tone("claude-fable-5-2", t, "claude-code"));
 });
+
+test("a terminal reporting pi is Oh My Pi", () => {
+  const { agents } = M.normalize([{ address: "t1", state: "live", report: { app: "pi" } }], []);
+  assert.equal(agents[0].app, "omp");
+});

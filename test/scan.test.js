@@ -135,3 +135,25 @@ test("a broken cache file only costs a full read", () => {
   fs.writeFileSync(cache, "{ not json");
   assert.equal(scan(dir, cache).sessions[0].tools, 5);
 });
+
+test("Oh My Pi: the newest session in the cwd's folder gives the model", () => {
+  const dir = path.join(home, "omp-claude");
+  setup(dir, "");
+  const agent = path.join(home, "omp");
+  const folder = path.join(agent, "sessions", "--private-tmp--"); // a cwd outside home
+  fs.mkdirSync(folder, { recursive: true });
+  const old = path.join(folder, "old.jsonl");
+  fs.writeFileSync(old, lines([{ type: "message", message: { role: "assistant", model: "claude-haiku-5-5" } }]));
+  fs.utimesSync(old, new Date(2026, 0, 1), new Date(2026, 0, 1));
+  fs.writeFileSync(path.join(folder, "new.jsonl"), lines([
+    { type: "model_change", model: "anthropic/claude-sonnet-5-5" },
+    { type: "message", message: { role: "user", content: SECRET } },
+    { type: "message", message: { role: "assistant", model: "claude-opus-5-5", content: SECRET } },
+  ]));
+  const out = execFileSync(process.execPath, ["--no-warnings", SCAN, "omp=/private/tmp"], {
+    env: { ...process.env, CLAUDE_CONFIG_DIR: dir, AGENT_FLOW_CACHE: path.join(home, "omp.json"), PI_CODING_AGENT_DIR: agent },
+  }).toString();
+  const s = JSON.parse(out).sessions.find((x) => x.agent === "omp");
+  assert.deepEqual([s.id, s.model, s.cwd], ["new", "claude-opus-5-5", "/private/tmp"]);
+  assert.ok(!out.includes(SECRET));
+});

@@ -35,7 +35,7 @@ export const norm = (p) => (p ?? "").replace(/\\/g, "/").replace(/\/+$/, "").toL
 
 function appOf(k) {
   const app = k.report?.app ?? k.program?.key ?? null;
-  return app === "claude" ? "claude-code" : app;
+  return app === "claude" ? "claude-code" : app === "pi" ? "omp" : app;
 }
 
 const isAgent = (k) => !!(k.report || k.program?.agent);

@@ -53,6 +53,20 @@ function saveCache() {
   } catch { /* a read-only temp folder: every scan reads the tails again */ }
 }
 
+// The whole lines in a file's last `max` bytes, parsed; for formats read whole each scan.
+function lastRows(file, max) {
+  const size = fs.statSync(file).size;
+  const start = Math.max(0, size - max);
+  const lines = readRange(file, start, size).toString("utf8").split("\n");
+  if (start > 0) lines.shift(); // starts mid-line
+  const rows = [];
+  for (const l of lines) {
+    if (!l) continue;
+    try { rows.push(JSON.parse(l)); } catch { /* a line still being written */ }
+  }
+  return rows;
+}
+
 function readRange(file, start, end) {
   const fd = fs.openSync(file, "r");
   const buf = Buffer.alloc(end - start);
@@ -341,6 +355,41 @@ function codex(folders) {
   return model ? folders.map((cwd, i) => ({ ...blank, id: `codex-${i}`, agent: "codex", cwd, model, lastAt: 0 })) : [];
 }
 
+// Oh My Pi: one JSONL per session in ~/.omp/agent/sessions/<folder>/, the folder named
+// after the cwd ("-Code-x" under home, "--private-tmp--" outside it). The model is the
+// last assistant message's, or the last model_change before any reply.
+function omp(folders) {
+  if (!folders.length) return [];
+  const home = os.homedir();
+  const base = path.join(process.env.PI_CODING_AGENT_DIR || path.join(home, ".omp", "agent"), "sessions");
+  const blank = { tools: null, ctx: 0, turnAt: 0, now: null, recent: [], sends: [], recvs: [], more: false, subs: [], total: 0 };
+  const used = new Set();
+  const out = [];
+  for (const cwd of folders) {
+    const name = cwd === home ? "-"
+      : cwd.startsWith(`${home}/`) ? `-${cwd.slice(home.length + 1).replace(/\//g, "-")}`
+      : `--${cwd.replace(/^\//, "").replace(/\//g, "-")}--`;
+    let files = [];
+    try {
+      files = fs.readdirSync(path.join(base, name)).filter((n) => n.endsWith(".jsonl"))
+        .map((n) => path.join(base, name, n)).filter((f) => !used.has(f))
+        .map((f) => ({ f, m: fs.statSync(f).mtimeMs })).sort((a, b) => b.m - a.m);
+    } catch { continue; }
+    const pick = files[0];
+    if (!pick) continue;
+    used.add(pick.f);
+    let model = null;
+    try {
+      for (const r of lastRows(pick.f, SUB_TAIL)) {
+        if (r.type === "message" && r.message?.role === "assistant" && r.message.model) model = r.message.model;
+        else if (r.type === "model_change" && r.model) model = r.model.split("/").pop();
+      }
+    } catch { /* the file vanished mid-read */ }
+    out.push({ ...blank, id: path.basename(pick.f, ".jsonl"), agent: "omp", cwd, model, lastAt: Math.round(pick.m) });
+  }
+  return out;
+}
+
 const sessions = [];
 let dir = [];
 try { dir = fs.readdirSync(path.join(root, "sessions")); } catch { /* no live sessions */ }
@@ -358,7 +407,7 @@ for (const name of dir) {
 }
 saveCache();
 for (const s of sessions) s.agent = "claude-code";
-sessions.push(...opencode(wanted("opencode")), ...codex(wanted("codex")));
+sessions.push(...opencode(wanted("opencode")), ...codex(wanted("codex")), ...omp(wanted("omp")));
 sessions.sort((a, b) => b.lastAt - a.lastAt);
 // Past Herdr's output limit the view would get cut JSON and show nothing: keep less history.
 let out = JSON.stringify({ sessions, warnings: [...warnings] });

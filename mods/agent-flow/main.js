@@ -28,7 +28,7 @@ const VIEWS = { diagram: "Diagram", map: "Map", timeline: "Timeline" };
 const SHAPE_NAMES = { auto: "Auto", tree: "Tree", stages: "Stages", radial: "Radial", organic: "Organic" };
 const NODE_H = 44;
 const SPIN = ["◐", "◓", "◑", "◒"];
-const SCANNED = ["opencode", "codex"]; // agents whose folder scan.cjs must be told
+const SCANNED = ["opencode", "codex", "omp"]; // agents whose folder scan.cjs must be told
 const GUESS = "Guessed: this folder has more than one session of this agent, so the model and tools may be another terminal's";
 const TALK = "↑ messages sent to the lead · ↓ messages from it";
 const fit = (px, size = 12) => Math.max(4, Math.floor(px / (size * 0.6)));
@@ -747,7 +747,8 @@ export default class AgentFlow extends View {
     const { session, guessed, kids, g, flows, flowBy, rows } = this.model(world, list, lead, t);
     const picked = this.view === "map" ? g.byKey.get(this.sel) ?? null : null;
     const mine = plain.filter((k) => k.parent === lead.address);
-    const working = kids.filter((k) => k.status === "working").length;
+    // Every agent and subagent of the space at work, the lead included; the same count as the Map's.
+    const working = g.nodes.filter((n) => n.status === "working").length;
     const wide = this.width >= 640;
     const narrow = this.width < NARROW;
     const beside = wide && this.view !== "map";
