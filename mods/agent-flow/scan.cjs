@@ -4,6 +4,8 @@
 // A mod can't stat files or read part of one, and transcripts grow to many MB, so this
 // reads only their tails. Read-only. Prompts and tool output are never printed: only
 // tool names, a short hint (file name, Bash description, pattern) and subagent descriptions.
+// Transcripts only grow, so each scan reads only what was appended since the last one: the
+// folded state and the byte offset of every transcript are kept in a cache file between runs.
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
@@ -13,7 +15,10 @@ const projects = path.join(root, "projects");
 const MAIN_TAIL = 6 * 1024 * 1024; // screenshots put ~1 MB in one row
 const SUB_TAIL = 2 * 1024 * 1024; // whole, for almost all: counts stay exact
 const MAX_SUBS = 12;
+const MAX_OPEN = 64; // tool calls still waiting for a result; interrupted ones never get one
 const QUIET_MS = 3 * 60 * 1000; // an unfinished subagent silent this long is reported stale
+const CACHE_VERSION = 1;
+const CACHE = process.env.AGENT_FLOW_CACHE || path.join(os.tmpdir(), "herdr-agent-flow", "scan-cache.json");
 const now = Date.now();
 
 function alive(pid) {
@@ -24,20 +29,67 @@ function json(file) {
   try { return JSON.parse(fs.readFileSync(file, "utf8")); } catch { return null; }
 }
 
-function tail(file, max) {
-  const stat = fs.statSync(file);
-  const start = Math.max(0, stat.size - max);
+// What earlier scans folded, per transcript, and where each session's transcript lives.
+// A cache from another version, or one that won't parse, is dropped: it only costs a full read.
+function loadCache() {
+  const c = json(CACHE);
+  return c?.version === CACHE_VERSION && c.files && c.paths ? c : { version: CACHE_VERSION, files: {}, paths: {} };
+}
+const cache = loadCache();
+const used = new Set(); // transcripts this scan touched; the rest leave the cache
+
+// Written whole to a temporary file and renamed, so a scan running beside another one never
+// reads half a cache. Losing the race only means the next scan reads a little more.
+function saveCache() {
+  for (const f of Object.keys(cache.files)) if (!used.has(f)) delete cache.files[f];
+  for (const [id, f] of Object.entries(cache.paths)) if (!used.has(f)) delete cache.paths[id];
+  try {
+    fs.mkdirSync(path.dirname(CACHE), { recursive: true });
+    const tmp = `${CACHE}.${process.pid}.tmp`;
+    fs.writeFileSync(tmp, JSON.stringify(cache));
+    fs.renameSync(tmp, CACHE);
+  } catch { /* a read-only temp folder: every scan reads the tails again */ }
+}
+
+function readRange(file, start, end) {
   const fd = fs.openSync(file, "r");
-  const buf = Buffer.alloc(stat.size - start);
+  const buf = Buffer.alloc(end - start);
   try { fs.readSync(fd, buf, 0, buf.length, start); } finally { fs.closeSync(fd); }
-  const lines = buf.toString("utf8").split("\n");
-  if (start > 0) lines.shift(); // starts mid-line
-  const rows = [];
-  for (const l of lines) {
-    if (!l) continue;
-    try { rows.push(JSON.parse(l)); } catch { /* a line still being written */ }
+  return buf;
+}
+
+// Folds what was appended to a transcript since the last scan into its saved state. Only
+// whole lines are read: the offset stops after the last newline, so a line still being
+// written is read next time. A file that shrank or was replaced, or that grew by more than
+// `max` since, starts over from its tail like a first read.
+function follow(file, max) {
+  const stat = fs.statSync(file);
+  const born = Math.round(stat.birthtimeMs);
+  used.add(file);
+  let c = cache.files[file];
+  if (!c || c.born !== born || stat.size < c.offset || stat.size - c.offset > max) {
+    const start = Math.max(0, stat.size - max);
+    c = cache.files[file] = { born, offset: start, skip: start > 0, partial: start > 0, state: blank() };
   }
-  return { rows, stat, partial: start > 0 };
+  if (stat.size > c.offset) {
+    const buf = readRange(file, c.offset, stat.size);
+    let from = 0;
+    if (c.skip) { // a tail starts mid-line: drop up to the first newline
+      const nl = buf.indexOf(0x0a);
+      if (nl >= 0) { from = nl + 1; c.skip = false; }
+    }
+    const end = c.skip ? 0 : buf.lastIndexOf(0x0a) + 1;
+    if (end > from) {
+      const rows = [];
+      for (const l of buf.toString("utf8", from, end).split("\n")) {
+        if (!l) continue;
+        try { rows.push(JSON.parse(l)); } catch { /* not a row */ }
+      }
+      digest(c.state, rows);
+    }
+    c.offset += end;
+  }
+  return { d: view(c.state), stat, partial: c.partial };
 }
 
 function hint(name, input = {}) {
@@ -74,10 +126,27 @@ function note(out, item, name, input, at) {
   out.sends.push({ t: at, to });
 }
 
-function digest(rows) {
-  const out = { model: null, ctx: 0, tools: 0, turnAt: 0, lastAt: 0, now: null, recent: [], sends: [], recvs: [] };
-  const open = new Map();
-  const agents = new Map();
+// A transcript folded so far. `open` holds tool calls waiting for their result and `agents`
+// the delegations among them, both by tool-use id; keys keep the order they were added in.
+function blank() {
+  return { model: null, ctx: 0, tools: 0, turnAt: 0, lastAt: 0, recent: [], sends: [], recvs: [], open: {}, agents: {} };
+}
+
+// What a session looks like from its state: the call still running, if any.
+function view(s) {
+  const pending = Object.values(s.open).pop();
+  return {
+    model: s.model, ctx: s.ctx, tools: s.tools, turnAt: s.turnAt, lastAt: s.lastAt,
+    now: pending ? { name: pending.name, hint: pending.hint } : null,
+    recent: s.recent, sends: s.sends, recvs: s.recvs,
+  };
+}
+
+// Folds transcript rows, oldest first, into `out`. Called again with only the rows appended
+// since, it ends where reading everything at once would have.
+function digest(out, rows) {
+  const open = out.open;
+  const agents = out.agents;
   for (const r of rows) {
     const c = r.message?.content;
     const at = Date.parse(r.timestamp ?? "") || 0;
@@ -93,9 +162,9 @@ function digest(rows) {
         note(out, item, b.name, b.input, at);
         out.tools++;
         out.recent.push(item);
-        open.set(b.id, item);
+        open[b.id] = item;
         if (b.name === "Agent" || b.name === "Task") {
-          agents.set(b.id, b.input?.subagent_type ?? "agent");
+          agents[b.id] = b.input?.subagent_type ?? "agent";
           item.delegate = b.input?.subagent_type ?? "agent";
         }
       }
@@ -104,28 +173,34 @@ function digest(rows) {
       if (typeof c === "string") heard(out, c, at);
       else for (const b of Array.isArray(c) ? c : []) if (b.type === "text") heard(out, b.text, at);
       for (const b of results) {
-        open.delete(b.tool_use_id);
-        if (agents.has(b.tool_use_id)) {
-          out.recent.push({ t: at, name: "back", hint: agents.get(b.tool_use_id), back: true });
+        delete open[b.tool_use_id];
+        if (b.tool_use_id in agents) {
+          out.recent.push({ t: at, name: "back", hint: agents[b.tool_use_id], back: true });
+          delete agents[b.tool_use_id];
         }
       }
       if (!results.length && !r.isMeta && !r.isSidechain) { out.tools = 0; out.turnAt = at; }
     }
   }
-  const pending = [...open.values()].pop();
-  out.now = pending ? { name: pending.name, hint: pending.hint } : null;
+  // Kept short, since the state is saved between scans.
+  const ids = Object.keys(open);
+  for (const id of ids.slice(0, Math.max(0, ids.length - MAX_OPEN))) { delete open[id]; delete agents[id]; }
   out.recent = out.recent.slice(-24);
   out.sends = out.sends.slice(-20);
   out.recvs = out.recvs.slice(-20);
   return out;
 }
 
+// Where a session's transcript is: under its folder's slug, or else wherever an earlier scan
+// found it, or else anywhere under projects (a folder renamed since, a slug rule that changed).
 function transcript(cwd, id) {
   const direct = path.join(projects, cwd.replace(/[^a-zA-Z0-9]/g, "-"), `${id}.jsonl`);
   if (fs.existsSync(direct)) return direct;
+  const known = cache.paths[id];
+  if (known && fs.existsSync(known)) return known;
   for (const dir of fs.readdirSync(projects)) {
     const file = path.join(projects, dir, `${id}.jsonl`);
-    if (fs.existsSync(file)) return file;
+    if (fs.existsSync(file)) return (cache.paths[id] = file);
   }
   return null;
 }
@@ -141,8 +216,7 @@ function subagents(file) {
   }).sort((a, b) => b.born - a.born);
   const subs = list.slice(0, MAX_SUBS).map(({ f, name, born, seen }) => {
     const meta = json(f.replace(/\.jsonl$/, ".meta.json")) ?? {};
-    const { rows, partial } = tail(f, SUB_TAIL);
-    const d = digest(rows);
+    const { d, partial } = follow(f, SUB_TAIL);
     const status = meta.finished === true ? "done" : now - seen > QUIET_MS ? "stale" : "working";
     return {
       id: name.replace(/^agent-|\.jsonl$/g, ""), type: meta.agentType ?? "agent",
@@ -256,11 +330,11 @@ for (const name of dir) {
   try {
     const file = transcript(s.cwd, s.sessionId);
     if (!file) continue;
-    const { rows, stat, partial } = tail(file, MAIN_TAIL);
-    const d = digest(rows);
+    const { d, stat, partial } = follow(file, MAIN_TAIL);
     sessions.push({ id: s.sessionId, pid: s.pid, cwd: s.cwd, startedAt: s.startedAt, ...d, more: partial && !d.turnAt, lastAt: Math.round(stat.mtimeMs), ...subagents(file) });
   } catch { /* a transcript vanished mid-read; the next scan sees the truth */ }
 }
+saveCache();
 for (const s of sessions) s.agent = "claude-code";
 sessions.push(...opencode(wanted("opencode")), ...codex(wanted("codex")));
 sessions.sort((a, b) => b.lastAt - a.lastAt);

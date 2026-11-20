@@ -55,6 +55,11 @@ command, never prompts or tool output. Messages are seen through `hc send`, Clau
 `SendMessage` and the tags `hc` adds on arrival; for those it keeps the target and the sender, not
 the text.
 
+The one file it writes is a cache in your temp folder (`herdr-agent-flow/scan-cache.json`, or
+wherever `AGENT_FLOW_CACHE` points) so each scan reads only what transcripts gained since the last
+one. It holds the same tool names and hints shown on screen, and deleting it only costs one full
+read.
+
 These are private formats, so an agent's update can leave a box at `model unknown`.
 
 ## License
