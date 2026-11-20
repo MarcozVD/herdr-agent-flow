@@ -157,3 +157,50 @@ test("Oh My Pi: the newest session in the cwd's folder gives the model", () => {
   assert.deepEqual([s.id, s.model, s.cwd], ["new", "claude-opus-5-5", "/private/tmp"]);
   assert.ok(!out.includes(SECRET));
 });
+
+// Runs scan.cjs with Oh My Pi's folder at `agent` and a made-up home folder.
+function scanOmp(name, agent, fakeHome, ...folders) {
+  const dir = path.join(home, `${name}-claude`);
+  setup(dir, "");
+  const out = execFileSync(process.execPath, ["--no-warnings", SCAN, ...folders.map((f) => `omp=${f}`)], {
+    env: { ...process.env, CLAUDE_CONFIG_DIR: dir, AGENT_FLOW_CACHE: path.join(home, `${name}.json`), PI_CODING_AGENT_DIR: agent, HOME: fakeHome, USERPROFILE: fakeHome },
+  }).toString();
+  return JSON.parse(out).sessions.filter((x) => x.agent === "omp");
+}
+
+// A Windows path, built from parts so no backslash is ever read as an escape.
+const win = (...parts) => parts.join(String.fromCharCode(92));
+
+function ompSession(folder, file, cwd, model, when) {
+  fs.mkdirSync(folder, { recursive: true });
+  const f = path.join(folder, `${file}.jsonl`);
+  const head = cwd ? [{ type: "title", v: 1, title: "", pad: "" }, { type: "session", version: 3, id: file, cwd }] : [];
+  fs.writeFileSync(f, lines([...head, { type: "model_change", model: `openai-codex/${model}` }]));
+  fs.utimesSync(f, when, when);
+}
+
+test("Oh My Pi on Windows: matched by the cwd the session recorded, whatever its folder's name", () => {
+  const agent = path.join(home, "omp-win");
+  // Oh My Pi files the Windows temp folder under "-tmp", which no rule on the path gives.
+  ompSession(path.join(agent, "sessions", "-tmp"), "a", win("C:", "Users", "me", "AppData", "Local", "Temp"), "gpt-6-luna", new Date(2026, 10, 20));
+  ompSession(path.join(agent, "sessions", "-Documents-basics"), "b", win("C:", "Users", "me", "Documents", "basics"), "gpt-5.5", new Date(2026, 10, 19));
+  const found = scanOmp("omp-win", agent, path.join(home, "nohome"), "c:/users/me/appdata/local/temp/", win("C:", "Users", "me", "Documents", "basics"), win("C:", "Users", "me", "Documents", "none"));
+  assert.deepEqual(found.map((s) => [s.id, s.model]), [["a", "gpt-6-luna"], ["b", "gpt-5.5"]]);
+});
+
+test("Oh My Pi without a session row goes by the folder name, either separator", () => {
+  const agent = path.join(home, "omp-old");
+  const fakeHome = path.join(home, "fakehome");
+  ompSession(path.join(agent, "sessions", "-Code-x"), "old", null, "gpt-5.5", new Date(2026, 10, 19));
+  const found = scanOmp("omp-old", agent, fakeHome, path.join(fakeHome, "Code", "x"));
+  assert.deepEqual(found.map((s) => [s.id, s.model]), [["old", "gpt-5.5"]]);
+});
+
+test("Oh My Pi: two terminals in one folder take its two newest sessions", () => {
+  const agent = path.join(home, "omp-two");
+  const folder = path.join(agent, "sessions", "-repo");
+  ompSession(folder, "older", win("D:", "repo"), "gpt-5.5", new Date(2026, 10, 18));
+  ompSession(folder, "newer", win("D:", "repo"), "gpt-6-luna", new Date(2026, 10, 20));
+  const found = scanOmp("omp-two", agent, path.join(home, "nohome"), win("D:", "repo"), "d:/repo");
+  assert.deepEqual(found.map((s) => s.id), ["newer", "older"]);
+});

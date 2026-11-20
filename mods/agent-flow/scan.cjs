@@ -355,27 +355,61 @@ function codex(folders) {
   return model ? folders.map((cwd, i) => ({ ...blank, id: `codex-${i}`, agent: "codex", cwd, model, lastAt: 0 })) : [];
 }
 
-// Oh My Pi: one JSONL per session in ~/.omp/agent/sessions/<folder>/, the folder named
-// after the cwd ("-Code-x" under home, "--private-tmp--" outside it). The model is the
-// last assistant message's, or the last model_change before any reply.
+// Where an Oh My Pi session ran, from its own first rows: `{ "type": "session", "cwd" }`.
+// Null for a file without one (an older version), which then goes by its folder's name.
+function ompCwd(file) {
+  const size = fs.statSync(file).size;
+  const head = readRange(file, 0, Math.min(size, 64 * 1024)).toString("utf8").split("\n").slice(0, 8);
+  for (const l of head) {
+    try { const r = JSON.parse(l); if (r?.type === "session") return typeof r.cwd === "string" ? r.cwd : null; } catch { /* cut */ }
+  }
+  return null;
+}
+
+// The folder Oh My Pi names after a cwd: "-Code-x" under home, "--private-tmp--" outside it.
+// Only for files with no session row: the name hides special cases (on Windows the temp
+// folder is "-tmp"), so the row's cwd is what decides.
+function ompFolder(cwd, home) {
+  const fwd = (p) => p.replace(/\\/g, "/");
+  const c = fwd(cwd);
+  const h = fwd(home);
+  if (sameDir(c, h)) return "-";
+  if (norm(c).startsWith(`${norm(h)}/`)) return `-${c.slice(h.length + 1).replace(/\//g, "-")}`;
+  return `--${c.replace(/^\//, "").replace(/[/:]/g, "-")}--`;
+}
+
+// Oh My Pi: one JSONL per session in ~/.omp/agent/sessions/<folder>/. Each asked folder
+// takes the newest session that ran there, by the cwd the session recorded, so Windows
+// paths and renamed folders match too. The model is the last assistant message's, or the
+// last model_change before any reply. Each file's cwd is kept in the cache: it never changes.
 function omp(folders) {
   if (!folders.length) return [];
   const home = os.homedir();
   const base = path.join(process.env.PI_CODING_AGENT_DIR || path.join(home, ".omp", "agent"), "sessions");
   const blank = { tools: null, ctx: 0, turnAt: 0, now: null, recent: [], sends: [], recvs: [], more: false, subs: [], total: 0 };
+  const files = [];
+  let dirs = [];
+  try { dirs = fs.readdirSync(base); } catch { return []; }
+  for (const dir of dirs) {
+    let names = [];
+    try { names = fs.readdirSync(path.join(base, dir)).filter((n) => n.endsWith(".jsonl")); } catch { continue; }
+    for (const n of names) {
+      const f = path.join(base, dir, n);
+      try { files.push({ f, dir, m: fs.statSync(f).mtimeMs }); } catch { /* gone */ }
+    }
+  }
+  files.sort((a, b) => b.m - a.m);
+  const known = cache.omp ?? {};
+  cache.omp = {};
+  const cwdOf = (x) => {
+    if (!(x.f in known)) { try { known[x.f] = ompCwd(x.f); } catch { known[x.f] = null; } }
+    return (cache.omp[x.f] = known[x.f]);
+  };
+  for (const x of files) if (x.f in known) cache.omp[x.f] = known[x.f]; // still there: keep
   const used = new Set();
   const out = [];
   for (const cwd of folders) {
-    const name = cwd === home ? "-"
-      : cwd.startsWith(`${home}/`) ? `-${cwd.slice(home.length + 1).replace(/\//g, "-")}`
-      : `--${cwd.replace(/^\//, "").replace(/\//g, "-")}--`;
-    let files = [];
-    try {
-      files = fs.readdirSync(path.join(base, name)).filter((n) => n.endsWith(".jsonl"))
-        .map((n) => path.join(base, name, n)).filter((f) => !used.has(f))
-        .map((f) => ({ f, m: fs.statSync(f).mtimeMs })).sort((a, b) => b.m - a.m);
-    } catch { continue; }
-    const pick = files[0];
+    const pick = files.find((x) => !used.has(x.f) && (cwdOf(x) != null ? sameDir(cwdOf(x), cwd) : x.dir === ompFolder(cwd, home)));
     if (!pick) continue;
     used.add(pick.f);
     let model = null;
@@ -405,9 +439,9 @@ for (const name of dir) {
     sessions.push({ id: s.sessionId, pid: s.pid, cwd: s.cwd, startedAt: s.startedAt, ...d, more: partial && !d.turnAt, lastAt: Math.round(stat.mtimeMs), ...subagents(file) });
   } catch { /* a transcript vanished mid-read; the next scan sees the truth */ }
 }
-saveCache();
 for (const s of sessions) s.agent = "claude-code";
 sessions.push(...opencode(wanted("opencode")), ...codex(wanted("codex")), ...omp(wanted("omp")));
+saveCache();
 sessions.sort((a, b) => b.lastAt - a.lastAt);
 // Past Herdr's output limit the view would get cut JSON and show nothing: keep less history.
 let out = JSON.stringify({ sessions, warnings: [...warnings] });
