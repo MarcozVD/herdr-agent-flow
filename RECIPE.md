@@ -52,7 +52,8 @@ Colors by model, from the theme: Opus `ansi5`, Sonnet `ansi3`, Haiku `ansi4`, Fa
 
 One mod, `mods/agent-flow/`:
 
-- `main.js`: the view.
+- `main.js`: the view. It keeps what `model.js` builds until one of its inputs changes (scan output, terminals, space, lead, theme, a 15-second step of the clock), so resizes, clicks and animations don't rebuild the graph, and it logs status changes there, once each.
+- `model.js`: the pure half, with no Herdr calls and the time passed in: `normalize` (terminals into agents and plain terminals), `pair`, `graph` (with a `byKey` index; sends resolve through a name index, first match in order), `links` and `kids`. It runs under plain Node, so it can be tested against the examples.
 - `scan.cjs`: a Node script run by `exec("node", ["--no-warnings", <path>, "opencode=<folder>", "codex=<folder>", ...])`, one argument per terminal running that agent. It prints JSON and reads:
   - Claude Code: `~/.claude/sessions/<pid>.json` for live sessions (`CLAUDE_CONFIG_DIR` moves it), the tail of `~/.claude/projects/<folder-slug>/<session>.jsonl`, and `<session>/subagents/agent-*.jsonl` with `.meta.json` (`agentType`, `description`, `finished`).
   - opencode: `~/.local/share/opencode/opencode.db` read-only, tables `session_v2` and `session_message`.

@@ -11,6 +11,7 @@ import { agents, terminals, panes, spaces, focused, theme, props, run, exec, app
 import * as team from "./examples/team.js";
 import * as platform from "./examples/platform.js";
 import { SHAPES, choose } from "./shapes.js";
+import { RANK, modelName, tone, normalize, pair, graph, links, kids } from "./model.js";
 
 const MOD = "agent-flow";
 const FONT = "JetBrains Mono";
@@ -19,32 +20,15 @@ const LOG_ROWS = 40;
 const KID_MAX = 250;
 const SHORT = 620;      // below this height the log gives its rows to the diagram
 const NARROW = 500;     // below this the flow becomes a list: a side panel is 368 wide
-const LINK_MS = 10 * 60000; // how long a message between agents stays drawn
-const LINK_LIVE_MS = 90000; // and how long it counts as happening now
+const LINK_LIVE_MS = 90000; // how long a message between agents counts as happening now
+const TICK_MS = 15000;  // time windows in the model move on at least this often
 const MAX_LANES = 3;
 const EXAMPLES = { team: { data: team, name: "billing" }, platform: { data: platform, name: "payments-platform" } };
 const VIEWS = { diagram: "Diagram", map: "Map", timeline: "Timeline" };
 const SHAPE_NAMES = { auto: "Auto", tree: "Tree", stages: "Stages", radial: "Radial", organic: "Organic" };
 const NODE_H = 44;
 const SPIN = ["◐", "◓", "◑", "◒"];
-const RANK = { blocked: 0, working: 1, done: 2, idle: 3 };
 const SCANNED = ["opencode", "codex"]; // agents whose folder scan.cjs must be told
-
-function modelName(m) {
-  const hit = /claude-([a-z]+)-(\d{1,2})(?:-(\d{1,2}))?(?!\d)/.exec(m ?? "");
-  if (!hit) return m ?? null;
-  return `${hit[1][0].toUpperCase()}${hit[1].slice(1)} ${hit[2]}${hit[3] ? `.${hit[3]}` : ""}`;
-}
-
-function tone(model, t, app) {
-  if (/opus/.test(model ?? "")) return t.ansi5;
-  if (/sonnet/.test(model ?? "")) return t.ansi3;
-  if (/haiku/.test(model ?? "")) return t.ansi4;
-  if (/fable/.test(model ?? "")) return t.ansi2;
-  if (app === "opencode") return t.ansi6;
-  if (app === "codex") return t.ansi2;
-  return t.accent;
-}
 
 const stateColor = (s, t) => ({ working: t.working, blocked: t.blocked, done: t.done, idle: t.idle, stale: t.unknown })[s] ?? t.dim;
 const stateWord = (s) => ({ working: "running", blocked: "needs you", done: "done", idle: "idle", stale: "no activity" })[s] ?? s ?? "";
@@ -53,7 +37,6 @@ const tokens = (n) => (n >= 1000 ? `${Math.round(n / 1000)}k` : `${n ?? 0}`);
 const clock = (ms) => new Date(ms).toTimeString().slice(0, 8);
 const count = (n, more) => `${more ? "≥" : ""}${n} tool${n === 1 ? "" : "s"}`;
 const toolLine = (x) => (x ? `${x.name}${x.hint ? ` ${x.hint}` : ""}` : "");
-const clean = (s) => (s ?? "").replace(/^OC \| /, "").replace(/^[^\p{L}\p{N}]+/u, "").trim();
 
 function elapsed(ms) {
   const s = Math.max(0, Math.floor(ms / 1000));
@@ -61,15 +44,6 @@ function elapsed(ms) {
   const m = Math.floor(s / 60);
   return m < 60 ? `${m}m` : `${Math.floor(m / 60)}h ${m % 60}m`;
 }
-
-const norm = (p) => (p ?? "").replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
-
-function appOf(k) {
-  const app = k.report?.app ?? k.program?.key ?? null;
-  return app === "claude" ? "claude-code" : app;
-}
-
-const isAgent = (k) => !!(k.report || k.program?.agent);
 
 function icon(p, size, color) {
   if (!p?.icon) return null;
@@ -88,75 +62,8 @@ function showing(node) {
 }
 const visible = () => props()?.overlay || panes().some((p) => p.mod === MOD) || !has(layout()) || showing(layout());
 
-// Sessions don't name their terminal, so they pair up by agent and folder; with several of
-// one agent in a folder, the busiest terminal takes the most recently active session.
-function pair(list, sessions) {
-  const free = [...sessions];
-  const found = new Map();
-  for (const a of [...list].sort((x, y) => (RANK[x.status] ?? 9) - (RANK[y.status] ?? 9))) {
-    const i = free.findIndex((s) => s.agent === a.app && norm(s.cwd) === norm(a.cwd));
-    if (i >= 0) found.set(a.address, free.splice(i, 1)[0]);
-  }
-  return found;
-}
-
-// A turn's subagents, or else the last ones that finished in the past quarter hour.
-function visibleSubs(s) {
-  if (!s?.subs) return [];
-  const turn = s.subs.filter((k) => k.status === "working" || k.lastAt >= s.turnAt);
-  return turn.length ? turn : s.subs.filter((k) => Date.now() - k.lastAt < 15 * 60000);
-}
-
-// Every agent in the space and subagent in a session, and what passed between them. `to`
-// in a send is an address, a terminal name, a subagent id or type, so it resolves here; a
-// target that isn't one (another space, a finished terminal) stays in the log only. Agents
-// with no transcript show through the tags on what they sent to agents that have one.
-function graph(list, sessions, t) {
-  const nodes = [];
-  for (const a of list) {
-    const s = sessions.get(a.address);
-    nodes.push({ key: a.address, name: a.name, role: a.label, model: s?.model ?? null, status: a.status, color: tone(s?.model, t, a.app), program: a.program, parent: a.parent, session: s, terminal: a.address, names: [a.address, a.label] });
-    for (const k of visibleSubs(s)) {
-      nodes.push({ key: k.id, name: k.type, role: k.type, model: k.model, status: k.status, color: tone(k.model, t, a.app), program: a.program, parent: a.address, session: k, names: [k.id, k.type] });
-    }
-  }
-  const find = (to) => nodes.find((n) => n.names.includes(to));
-  const events = [];
-  for (const n of nodes) {
-    const s = n.session;
-    for (const m of s?.sends ?? []) {
-      const to = find(m.to);
-      if (to && to !== n) events.push({ t: m.t, from: n.key, to: to.key, kind: "message" });
-    }
-    for (const m of s?.recvs ?? []) {
-      const from = find(m.from);
-      if (from && from !== n && !from.session) events.push({ t: m.t, from: from.key, to: n.key, kind: "message" });
-    }
-    for (const x of s?.recent ?? []) {
-      const sub = find(x.delegate ?? x.hint);
-      if (x.delegate && sub) events.push({ t: x.t, from: n.key, to: sub.key, kind: "delegates", label: x.hint });
-      if (x.back && sub) events.push({ t: x.t, from: sub.key, to: n.key, kind: "came back" });
-    }
-  }
-  return { nodes, events: events.filter((e) => e.t).sort((x, y) => x.t - y.t) };
-}
-
-// Messages lately, one per direction between two agents.
-function links(g, now) {
-  const found = new Map();
-  const node = (key) => g.nodes.find((n) => n.key === key);
-  const name = (key) => node(key)?.name ?? key;
-  const role = (key) => node(key)?.role ?? name(key);
-  for (const e of g.events) {
-    if (e.kind !== "message" || now - e.t > LINK_MS) continue;
-    const id = `${e.from}>${e.to}`;
-    const l = found.get(id) ?? { from: e.from, to: e.to, fromName: name(e.from), toName: name(e.to), fromRole: role(e.from), toRole: role(e.to), n: 0, last: 0 };
-    l.n++;
-    l.last = Math.max(l.last, e.t);
-    found.set(id, l);
-  }
-  return [...found.values()].sort((x, y) => y.last - x.last);
-}
+// Two keys match when every part is identical.
+const same = (a, b) => a.length === b.length && a.every((x, i) => x === b[i]);
 
 export default class AgentFlow extends View {
   init(_props, cx) {
@@ -215,24 +122,31 @@ export default class AgentFlow extends View {
 
   // Every live terminal as one shape, split into agents and plain terminals.
   world() {
-    const raw = (this.sample ? this.sample.data.terminals : terminals()).filter((k) => k.state === "live");
-    const listed = new Map((this.sample ? [] : agents()).map((a) => [a.address, a]));
-    const all = raw.map((k) => {
-      const seen = listed.get(k.address);
-      const word = seen?.status ?? k.status;
-      return {
-        address: k.address, parent: k.parent ?? null, cwd: k.cwd ?? null, app: appOf(k), program: k.program,
-        status: word === "error" ? "blocked" : word, label: k.name ?? null, seq: seen?.seq ?? 0,
-        space: seen?.space ?? k.labels?.["herdr.space"] ?? null,
-        name: k.program?.name ?? k.report?.app ?? k.address,
-        title: clean(k.report?.title) || clean(seen?.title) || clean(k.title),
-      };
-    });
-    // A sub-agent without a pane may carry no space: it lives in its parent's.
-    const byAddress = new Map(all.map((k) => [k.address, k]));
-    for (const k of all) k.space ??= byAddress.get(k.parent)?.space ?? null;
-    const flags = new Map(raw.map((k) => [k.address, isAgent(k)]));
-    return { agents: all.filter((k) => flags.get(k.address)), plain: all.filter((k) => !flags.get(k.address)) };
+    return this.sample ? normalize(this.sample.data.terminals, []) : normalize(terminals(), agents());
+  }
+
+  // What the views draw for this lead, kept until something it's built from changes: the
+  // scan, the terminals, the space, the lead, the theme, or a step of the clock (messages
+  // stop counting as live, finished subagents leave). Herdr renders on every change it
+  // knows of and on every resize, and most of those change none of this. Status changes
+  // are logged here, once each, since they always change the terminals.
+  model(world, list, lead, t) {
+    const wall = Date.now();
+    const key = [this.raw, JSON.stringify(world), this.space, lead.address, JSON.stringify(t), Math.floor(wall / TICK_MS), this.now()];
+    if (this.made && same(this.made.key, key)) return this.made.value;
+    if (!this.sample) this.track(world.agents);
+    const sessions = pair(world.agents, this.scan.sessions);
+    const session = sessions.get(lead.address) ?? null;
+    const boxes = kids(lead, list, sessions, t, wall);
+    const g = graph(list, sessions, t, wall);
+    const flows = links(g, this.now());
+    const value = {
+      sessions, session, kids: boxes, g, flows,
+      flowBy: new Map(flows.map((l) => [`${l.from}>${l.to}`, l])),
+      rows: this.logRows(lead, session, boxes, list, t),
+    };
+    this.made = { key, value };
+    return value;
   }
 
   chosen(leads, list) {
@@ -242,32 +156,6 @@ export default class AgentFlow extends View {
     const lead = top ?? leads.find((a) => a.address === asked?.address) ?? leads.find((a) => a.address === this.lastLead) ?? leads[0] ?? null;
     this.lastLead = lead?.address ?? null;
     return lead;
-  }
-
-  // Agents it started and subagents inside its process, as one list of boxes.
-  kids(lead, list, sessions, t) {
-    const inner = visibleSubs(sessions.get(lead.address)).map((k) => ({
-      id: k.id, title: k.type, agent: lead.name, sub: k.description, status: k.status, model: k.model,
-      tools: k.tools, more: k.more, ctx: k.ctx, now: k.now, recent: k.recent, color: tone(k.model, t, lead.app),
-      startedAt: k.startedAt, lastAt: k.lastAt, program: lead.program, nested: [],
-    }));
-    const started = list.filter((k) => k.parent === lead.address).map((k) => {
-      const s = sessions.get(k.address);
-      // A second tier: what this agent delegated in turn.
-      const nested = [
-        ...list.filter((g) => g.parent === k.address).map((g) => {
-          const gs = sessions.get(g.address);
-          return { id: g.address, address: g.address, name: g.label ?? g.name, model: gs?.model ?? null, status: g.status, color: tone(gs?.model, t, g.app) };
-        }),
-        ...visibleSubs(s).map((g) => ({ id: g.id, name: g.type, model: g.model, status: g.status, color: tone(g.model, t, k.app) })),
-      ];
-      return {
-        id: k.address, address: k.address, title: k.label ?? k.name, label: k.label, agent: k.name, sub: k.title, status: k.status,
-        model: s?.model ?? null, tools: s?.tools ?? null, ctx: s?.ctx ?? 0, now: s?.now, recent: s?.recent ?? [],
-        color: tone(s?.model, t, k.app), lastAt: s?.lastAt, program: k.program, nested,
-      };
-    });
-    return [...started, ...inner].sort((a, b) => (RANK[a.status] ?? 2) - (RANK[b.status] ?? 2) || (b.startedAt ?? 0) - (a.startedAt ?? 0));
   }
 
   track(list) {
@@ -380,10 +268,10 @@ export default class AgentFlow extends View {
       .concat((k.nested?.length ?? 0) > 3 ? [div().pl(14).text_color(t.dim).child(`+${k.nested.length - 3} more`)] : []);
   }
 
-  // Messages with the lead, on the box: sent up and received.
-  talk(k, flows, lead) {
-    const up = flows.find((l) => l.from === k.id && l.to === lead)?.n ?? 0;
-    const down = flows.find((l) => l.from === lead && l.to === k.id)?.n ?? 0;
+  // Messages with the lead, on the box: sent up and received. `flowBy` is the routes by `from>to`.
+  talk(k, flowBy, lead) {
+    const up = flowBy.get(`${k.id}>${lead}`)?.n ?? 0;
+    const down = flowBy.get(`${lead}>${k.id}`)?.n ?? 0;
     return [up ? `↑${up}` : "", down ? `↓${down}` : ""].filter(Boolean).join(" ");
   }
 
@@ -416,7 +304,8 @@ export default class AgentFlow extends View {
         .when(session.ctx > 0, (x) => x.child(`ctx ${tokens(session.ctx)}`))));
   }
 
-  kidBox(k, t, width, flows) {
+  kidBox(k, t, width, flowBy) {
+    const talk = this.talk(k, flowBy, this.lastLead);
     const quiet = k.status === "stale";
     const color = quiet ? t.border : k.color;
     const tight = width < 170; // four boxes side by side: drop what the detail panel repeats
@@ -431,7 +320,7 @@ export default class AgentFlow extends View {
       .child(h_flex().gap(6).items_center().text_color(t.dim)
         .child(this.mark(k.status, t)).child(stateWord(k.status))
         .when(k.tools != null && !tight, (e) => e.child(`· ${count(k.tools, k.more)}`))
-        .when(!!this.talk(k, flows, this.lastLead), (e) => e.child(div().text_color(t.foreground).child(this.talk(k, flows, this.lastLead)))))
+        .when(!!talk, (e) => e.child(div().text_color(t.foreground).child(talk))))
       .children(this.nested(k, t));
   }
 
@@ -454,7 +343,8 @@ export default class AgentFlow extends View {
   }
 
   // The rail down the left edge carries a live box's color from the lead to that box.
-  listRow(k, t, rail, flows) {
+  listRow(k, t, rail, flowBy) {
+    const talk = this.talk(k, flowBy, this.lastLead);
     const open = this.kid === k.id;
     const name = k.address ? k.agent : `${k.agent} · ${k.title}`;
     return h_flex().w_full().items_stretch().child(div().w(1).flex_none().bg(rail))
@@ -470,7 +360,7 @@ export default class AgentFlow extends View {
         .child(div().truncate().text_color(k.model ? k.color : t.dim).child(modelName(k.model) ?? "model unknown"))
         .child(this.bar(k.status, k.color, t, this.width))
         .child(div().truncate().text_color(t.muted).child(k.now ? toolLine(k.now) : k.sub || stateWord(k.status)))
-        .when(!!this.talk(k, flows, this.lastLead), (e) => e.child(div().text_color(t.foreground).child(this.talk(k, flows, this.lastLead))))
+        .when(!!talk, (e) => e.child(div().text_color(t.foreground).child(talk)))
         .children(this.nested(k, t))
         .when(open, (e) => e.child(this.details(k, t))));
   }
@@ -508,7 +398,7 @@ export default class AgentFlow extends View {
       const b = x(e.to);
       const left = Math.min(a, b);
       const width = Math.max(a, b) - left;
-      const color = e.kind === "came back" ? t.dim : g.nodes.find((n) => n.key === e.from).color;
+      const color = e.kind === "came back" ? t.dim : g.byKey.get(e.from).color;
       const live = now - e.t < LINK_LIVE_MS;
       return div().id(`row-${i}`).relative().w_full().h(24).flex_none().children(lifelines())
         .when(gutter > 0, (r) => r.child(div().absolute().top(4).left(0).text_color(t.dim).child(clock(e.t))))
@@ -525,10 +415,9 @@ export default class AgentFlow extends View {
 
   // Every agent at any depth, placed by the shape of the work rather than in rows: Auto
   // picks from who talks to whom, so the arrangement changes as the work does.
-  map(lead, g, t, room, h) {
+  map(lead, g, flows, t, room, h) {
     const now = this.now();
-    const flows = links(g, now);
-    const byKey = new Map(g.nodes.map((n) => [n.key, n]));
+    const byKey = g.byKey;
     const family = (l) => byKey.get(l.to)?.parent === l.from || byKey.get(l.from)?.parent === l.to;
     const routes = flows.filter((l) => !family(l));
     const shape = this.shape === "auto" ? choose(g.nodes, routes) : this.shape;
@@ -581,9 +470,11 @@ export default class AgentFlow extends View {
       if (live) marks.push(div().absolute().left(at.x2 - 3).top(at.y2 - 3).w(6).h(6).rounded(3).bg(color).loop("opacity", { from: 0.2, to: 1, period: 1100 }));
     }
 
-    const up = (key) => flows.filter((l) => l.from === key && byKey.get(key)?.parent === l.to).reduce((n, l) => n + l.n, 0);
+    const ups = new Map();
+    for (const l of flows) if (byKey.get(l.from)?.parent === l.to) ups.set(l.from, (ups.get(l.from) ?? 0) + l.n);
     const nodes = g.nodes.filter((n) => pos.has(n.key)).map((n) => {
       const p = pos.get(n.key);
+      const up = ups.get(n.key) ?? 0;
       const quiet = n.status === "idle" || n.status === "stale";
       return v_flex().id(`node-${n.key}`).absolute().left(Math.round(p.x)).top(Math.round(p.y)).w(W).h(NODE_H).px(6).justify_center().bg(t.background)
         .transition("left", { duration: 450 }).transition("top", { duration: 450 })
@@ -595,7 +486,7 @@ export default class AgentFlow extends View {
           .child(this.mark(n.status, t))
           .child(icon(n.program, 11, n.color) ?? div())
           .child(div().flex_1().min_w(0).truncate().font_semibold().child(n.role ?? n.name))
-          .when(up(n.key) > 0, (e) => e.child(div().flex_none().text_color(t.muted).child(`↑${up(n.key)}`))))
+          .when(up > 0, (e) => e.child(div().flex_none().text_color(t.muted).child(`↑${up}`))))
         .child(div().truncate().text_size(11).text_color(n.model ? n.color : t.dim).child(modelName(n.model) ?? n.name));
     });
 
@@ -616,16 +507,15 @@ export default class AgentFlow extends View {
         div().flex_none().text_color(now - l.last < LINK_LIVE_MS ? t.foreground : t.dim).child(`⇄ ${l.fromRole} → ${l.toRole}${l.n > 1 ? ` ×${l.n}` : ""}`)))));
   }
 
-  flow(lead, session, kids, g, t, room, bg) {
+  flow(lead, session, kids, flows, flowBy, t, room, bg) {
     const narrow = room < NARROW || this.expanded;
     const flow = v_flex().id("flow").flex_1().min_w(0).h_full().items_center().overflow_y_scroll().child(this.leadBox(lead, session, t, narrow));
     if (!kids.length) return flow.child(this.stem(t.border, 16)).child(div().text_color(t.dim).pb(4).child("no agents delegated"));
     const models = [...new Set(kids.map((k) => modelName(k.model)).filter(Boolean))];
-    const flows = links(g, this.now());
     if (narrow) {
       const railAt = (i) => kids.slice(i).find((k) => k.status === "working")?.color ?? t.border;
       return flow.child(h_flex().w_full().child(this.stem(railAt(0), 10)))
-        .child(v_flex().w_full().children(kids.map((k, i) => this.listRow(k, t, railAt(i), flows))))
+        .child(v_flex().w_full().children(kids.map((k, i) => this.listRow(k, t, railAt(i), flowBy))))
         .when(this.expanded, (e) => e.child(h_flex().w_full().pl(14).child(this.button("collapse", "back to the diagram", t, () => { this.expanded = false; }))))
         .child(v_flex().w_full().flex_none().children(flows.filter((l) => l.from !== lead.address && l.to !== lead.address && kids.some((k) => k.id === l.from || k.id === l.to)).slice(0, MAX_LANES).map((l) =>
           div().pl(14).truncate().text_color(t.muted).child(`⇄ ${l.fromName} → ${l.toName}${l.n > 1 ? ` ×${l.n}` : ""}`))))
@@ -642,7 +532,7 @@ export default class AgentFlow extends View {
         .when(models.length > 0, (x) => x.child(div().truncate().text_color(t.dim).child(models.join(", "))))).child(this.stem(trunk, 8)))
       .child(this.fan(shown, t, false))
       .child(h_flex().w_full().items_stretch().children(shown.map((k) => h_flex().flex_1().min_w(0).px(5).justify_center().items_stretch()
-        .child(this.kidBox(k, t, Math.min(KID_MAX, room / shown.length) - 28, flows)))))
+        .child(this.kidBox(k, t, Math.min(KID_MAX, room / shown.length) - 28, flowBy)))))
       .when(peers.length > 0, (e) => e.child(this.lanes(shown, peers, t, room, bg)))
       .child(this.fan(shown, t, true))
       .when(kids.length > shown.length, (e) => e.child(this.button("more", `+${kids.length - shown.length} more`, t, () => { this.expanded = true; })))
@@ -725,7 +615,8 @@ export default class AgentFlow extends View {
 
   render() {
     const t = theme();
-    const { agents: all, plain } = this.world();
+    const world = this.world();
+    const { agents: all, plain } = world;
     // The space it's called from: props().space pins a copy to one space.
     const spaceId = this.sample ? null : props()?.space ?? focused()?.space ?? null;
     if (spaceId !== this.space) { this.space = spaceId; this.pick = this.sample ? "t1" : null; this.lastLead = null; this.kid = null; this.expanded = false; }
@@ -745,11 +636,7 @@ export default class AgentFlow extends View {
           .child(div().text_color(t.muted).child(`No agents in ${spaceName}`))
           .child(div().text_color(t.dim).child("Start one from the + menu and its work shows here")));
     }
-    if (!this.sample) this.track(all);
-    const sessions = pair(all, this.scan.sessions);
-    const session = sessions.get(lead.address) ?? null;
-    const kids = this.kids(lead, list, sessions, t);
-    const g = graph(list, sessions, t);
+    const { session, kids, g, flows, flowBy, rows } = this.model(world, list, lead, t);
     const mine = plain.filter((k) => k.parent === lead.address);
     const working = kids.filter((k) => k.status === "working").length;
     const wide = this.width >= 640;
@@ -758,7 +645,7 @@ export default class AgentFlow extends View {
     const room = this.width - 24 - (beside ? 236 : 0);
     const bg = overlay ? t.canvas : t.chrome;
     const mapHeight = Math.max(360, this.height - (narrow ? 280 : 330) - (mine.length ? 26 : 0));
-    const body = this.view === "map" ? this.map(lead, g, t, room, mapHeight) : this.view === "timeline" ? this.timeline(lead, g, t, room, bg) : this.flow(lead, session, kids, g, t, room, bg);
+    const body = this.view === "map" ? this.map(lead, g, flows, t, room, mapHeight) : this.view === "timeline" ? this.timeline(lead, g, t, room, bg) : this.flow(lead, session, kids, flows, flowBy, t, room, bg);
     const color = tone(session?.model, t, lead.app);
 
     return root
@@ -777,6 +664,6 @@ export default class AgentFlow extends View {
         .when(beside, (e) => e.child(this.side(lead, session, kids, t)))
         .child(body))
       .when(mine.length > 0, (e) => e.child(this.plainList(mine, t)))
-      .child(this.logBox(this.logRows(lead, session, kids, list, t), t, narrow));
+      .child(this.logBox(rows, t, narrow));
   }
 }
