@@ -17,7 +17,9 @@ const SUB_TAIL = 2 * 1024 * 1024; // whole, for almost all: counts stay exact
 const MAX_SUBS = 12;
 const MAX_OPEN = 64; // tool calls still waiting for a result; interrupted ones never get one
 const QUIET_MS = 3 * 60 * 1000; // an unfinished subagent silent this long is reported stale
-const CACHE_VERSION = 1;
+const CACHE_VERSION = 2;
+const MAX_OUT = 6 * 1024 * 1024; // Herdr's exec keeps 8 MiB of output and drops the rest
+const warnings = new Set(); // a private format that changed, named by what's missing
 const CACHE = process.env.AGENT_FLOW_CACHE || path.join(os.tmpdir(), "herdr-agent-flow", "scan-cache.json");
 const now = Date.now();
 
@@ -83,12 +85,13 @@ function follow(file, max) {
       const rows = [];
       for (const l of buf.toString("utf8", from, end).split("\n")) {
         if (!l) continue;
-        try { rows.push(JSON.parse(l)); } catch { /* not a row */ }
+        try { rows.push(JSON.parse(l)); } catch { c.state.seen.bad++; }
       }
       digest(c.state, rows);
     }
     c.offset += end;
   }
+  drift(c.state.seen);
   return { d: view(c.state), stat, partial: c.partial };
 }
 
@@ -129,7 +132,20 @@ function note(out, item, name, input, at) {
 // A transcript folded so far. `open` holds tool calls waiting for their result and `agents`
 // the delegations among them, both by tool-use id; keys keep the order they were added in.
 function blank() {
-  return { model: null, ctx: 0, tools: 0, turnAt: 0, lastAt: 0, recent: [], sends: [], recvs: [], open: {}, agents: {} };
+  return {
+    model: null, ctx: 0, tools: 0, turnAt: 0, lastAt: 0, recent: [], sends: [], recvs: [], open: {}, agents: {},
+    seen: { rows: 0, bad: 0, typed: 0, stamped: 0, assistant: 0, model: 0 },
+  };
+}
+
+// What a transcript's rows should carry, checked once enough of them were read: when an
+// update renames a field, this says which one, rather than leaving `model unknown` to guess at.
+function drift(n) {
+  if (n.bad > 20 && n.bad > n.rows) warnings.add("Claude Code transcript lines no longer parse as JSON");
+  if (n.rows < 10) return;
+  if (!n.typed) warnings.add("Claude Code transcript rows have no `type` of \"assistant\" or \"user\"");
+  if (!n.stamped) warnings.add("Claude Code transcript rows have no `timestamp`");
+  if (n.assistant >= 5 && !n.model) warnings.add("Claude Code assistant rows have no `message.model`");
 }
 
 // What a session looks like from its state: the call still running, if any.
@@ -151,8 +167,13 @@ function digest(out, rows) {
     const c = r.message?.content;
     const at = Date.parse(r.timestamp ?? "") || 0;
     if (at) out.lastAt = Math.max(out.lastAt, at);
+    out.seen.rows++;
+    if (at) out.seen.stamped++;
+    if (r.type === "assistant" || r.type === "user") out.seen.typed++;
     if (r.type === "assistant") {
       const m = r.message;
+      out.seen.assistant++;
+      if (m?.model) out.seen.model++;
       if (m?.model && m.model !== "<synthetic>") out.model = m.model;
       const u = m?.usage;
       if (u) out.ctx = (u.input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0);
@@ -297,7 +318,7 @@ function opencode(folders) {
       });
       return { id: r.id, agent: "opencode", cwd: r.directory, ...load(r.id), lastAt: r.time_updated, more: false, subs, total: subs.length };
     });
-  } catch { return []; } finally { db.close(); }
+  } catch (e) { warnings.add(`opencode.db: ${e.message}`); return []; } finally { db.close(); }
 }
 
 function codex(folders) {
@@ -309,7 +330,7 @@ function codex(folders) {
   let rows = [];
   const db = files.length ? database(path.join(home, files[files.length - 1])) : null;
   if (db) {
-    try { rows = db.prepare("select id, cwd, model, updated_at_ms from threads where archived = 0 order by updated_at_ms desc limit 60").all(); } catch { /* another version's schema */ } finally { db.close(); }
+    try { rows = db.prepare("select id, cwd, model, updated_at_ms from threads where archived = 0 order by updated_at_ms desc limit 60").all(); } catch (e) { warnings.add(`Codex state: ${e.message}`); } finally { db.close(); }
   }
   const found = perFolder(rows, folders, (r) => r.cwd).map((r) => ({ ...blank, id: r.id, agent: "codex", cwd: r.cwd, model: r.model, lastAt: r.updated_at_ms }));
   if (found.length) return found;
@@ -326,6 +347,7 @@ try { dir = fs.readdirSync(path.join(root, "sessions")); } catch { /* no live se
 for (const name of dir) {
   if (!name.endsWith(".json")) continue;
   const s = json(path.join(root, "sessions", name));
+  if (s && alive(s.pid) && (!s.sessionId || !s.cwd)) warnings.add("Claude Code sessions/<pid>.json has no `sessionId` or `cwd`");
   if (!s?.sessionId || !s.cwd || !alive(s.pid)) continue;
   try {
     const file = transcript(s.cwd, s.sessionId);
@@ -338,4 +360,15 @@ saveCache();
 for (const s of sessions) s.agent = "claude-code";
 sessions.push(...opencode(wanted("opencode")), ...codex(wanted("codex")));
 sessions.sort((a, b) => b.lastAt - a.lastAt);
-process.stdout.write(JSON.stringify({ sessions }));
+// Past Herdr's output limit the view would get cut JSON and show nothing: keep less history.
+let out = JSON.stringify({ sessions, warnings: [...warnings] });
+for (const keep of [8, 3, 0]) {
+  if (out.length <= MAX_OUT) break;
+  for (const s of sessions) {
+    s.recent = s.recent.slice(-keep);
+    for (const k of s.subs) k.recent = k.recent.slice(-keep);
+    if (!keep) s.subs = s.subs.filter((k) => k.status === "working");
+  }
+  out = JSON.stringify({ sessions, warnings: [...warnings, "output trimmed: too many sessions to show every tool"] });
+}
+process.stdout.write(out);

@@ -1,0 +1,12 @@
+{
+  "name": "herdr-agent-flow",
+  "private": true,
+  "type": "module",
+  "description": "Tests for the Agent Flow mod. The mod itself is mods/agent-flow/ and needs no install.",
+  "scripts": {
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

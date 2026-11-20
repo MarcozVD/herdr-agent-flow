@@ -135,13 +135,13 @@ export default class AgentFlow extends View {
     const key = [this.raw, JSON.stringify(world), this.space, lead.address, JSON.stringify(t), Math.floor(wall / TICK_MS), this.now()];
     if (this.made && same(this.made.key, key)) return this.made.value;
     if (!this.sample) this.track(world.agents);
-    const sessions = pair(world.agents, this.scan.sessions);
+    const { found: sessions, guessed } = pair(world.agents, this.scan.sessions);
     const session = sessions.get(lead.address) ?? null;
-    const boxes = kids(lead, list, sessions, t, wall);
-    const g = graph(list, sessions, t, wall);
+    const boxes = kids(lead, list, sessions, t, wall, guessed);
+    const g = graph(list, sessions, t, wall, guessed);
     const flows = links(g, this.now());
     const value = {
-      sessions, session, kids: boxes, g, flows,
+      sessions, session, guessed, kids: boxes, g, flows,
       flowBy: new Map(flows.map((l) => [`${l.from}>${l.to}`, l])),
       rows: this.logRows(lead, session, boxes, list, t),
     };

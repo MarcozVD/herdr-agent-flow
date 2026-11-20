@@ -18,11 +18,19 @@ export function tone(model, t, app) {
   if (/haiku/.test(model ?? "")) return t.ansi4;
   if (/fable/.test(model ?? "")) return t.ansi2;
   if (app === "opencode") return t.ansi6;
-  if (app === "codex") return t.ansi2;
+  if (app === "codex") return t.ansi7; // not ansi2: that's Fable's
   return t.accent;
 }
 
 const clean = (s) => (s ?? "").replace(/^OC \| /, "").replace(/^[^\p{L}\p{N}]+/u, "").trim();
+// Cut from the middle, where model names repeat least: "deepseek-v4…ash:free".
+export function middle(s, n) {
+  if (s == null || s.length <= n) return s;
+  if (n < 4) return s.slice(0, Math.max(0, n));
+  const head = Math.ceil((n - 1) / 2);
+  return `${s.slice(0, head)}…${s.slice(s.length - (n - 1 - head))}`;
+}
+
 export const norm = (p) => (p ?? "").replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
 
 function appOf(k) {
@@ -56,15 +64,26 @@ export function normalize(raw, listed) {
 }
 
 // Sessions don't name their terminal, so they pair up by agent and folder; with several of
-// one agent in a folder, the busiest terminal takes the most recently active session.
+// one agent in a folder, the busiest terminal takes the most recently active session. That
+// is a guess whenever a folder has more than one terminal or more than one session of an
+// agent (one may run outside Herdr), and `guessed` names those terminals so the view can
+// say so instead of passing someone else's model off as theirs.
 export function pair(list, sessions) {
   const free = [...sessions];
   const found = new Map();
+  const where = (agent, cwd) => `${agent}|${norm(cwd)}`;
+  const count = (keys) => keys.reduce((m, k) => m.set(k, (m.get(k) ?? 0) + 1), new Map());
+  const terms = count(list.map((a) => where(a.app, a.cwd)));
+  const held = count(sessions.map((s) => where(s.agent, s.cwd)));
+  const guessed = new Set();
   for (const a of [...list].sort((x, y) => (RANK[x.status] ?? 9) - (RANK[y.status] ?? 9))) {
     const i = free.findIndex((s) => s.agent === a.app && norm(s.cwd) === norm(a.cwd));
-    if (i >= 0) found.set(a.address, free.splice(i, 1)[0]);
+    if (i < 0) continue;
+    found.set(a.address, free.splice(i, 1)[0]);
+    const k = where(a.app, a.cwd);
+    if (terms.get(k) > 1 || held.get(k) > 1) guessed.add(a.address);
   }
-  return found;
+  return { found, guessed };
 }
 
 // A turn's subagents, or else the last ones that finished in the past quarter hour.
@@ -78,13 +97,13 @@ export function visibleSubs(s, wall) {
 // in a send is an address, a terminal name, a subagent id or type, so it resolves here; a
 // target that isn't one (another space, a finished terminal) stays in the log only. Agents
 // with no transcript show through the tags on what they sent to agents that have one.
-export function graph(list, sessions, t, wall) {
+export function graph(list, sessions, t, wall, guessed = new Set()) {
   const nodes = [];
   for (const a of list) {
     const s = sessions.get(a.address);
-    nodes.push({ key: a.address, name: a.name, role: a.label, model: s?.model ?? null, status: a.status, color: tone(s?.model, t, a.app), program: a.program, parent: a.parent, session: s, terminal: a.address, names: [a.address, a.label] });
+    nodes.push({ key: a.address, name: a.name, role: a.label, title: a.title || null, guessed: guessed.has(a.address), model: s?.model ?? null, status: a.status, color: tone(s?.model, t, a.app), program: a.program, parent: a.parent, session: s, terminal: a.address, names: [a.address, a.label] });
     for (const k of visibleSubs(s, wall)) {
-      nodes.push({ key: k.id, name: k.type, role: k.type, model: k.model, status: k.status, color: tone(k.model, t, a.app), program: a.program, parent: a.address, session: k, names: [k.id, k.type] });
+      nodes.push({ key: k.id, name: k.type, role: k.type, title: k.description || null, guessed: guessed.has(a.address), model: k.model, status: k.status, color: tone(k.model, t, a.app), program: a.program, parent: a.address, session: k, names: [k.id, k.type] });
     }
   }
   // The first node that answers to a name, as a search in order would find it.
@@ -128,11 +147,11 @@ export function links(g, now) {
 }
 
 // Agents the lead started and subagents inside its process, as one list of boxes.
-export function kids(lead, list, sessions, t, wall) {
+export function kids(lead, list, sessions, t, wall, guessed = new Set()) {
   const inner = visibleSubs(sessions.get(lead.address), wall).map((k) => ({
     id: k.id, title: k.type, agent: lead.name, sub: k.description, status: k.status, model: k.model,
     tools: k.tools, more: k.more, ctx: k.ctx, now: k.now, recent: k.recent, color: tone(k.model, t, lead.app),
-    startedAt: k.startedAt, lastAt: k.lastAt, program: lead.program, nested: [],
+    startedAt: k.startedAt, lastAt: k.lastAt, program: lead.program, nested: [], guessed: guessed.has(lead.address),
   }));
   const started = list.filter((k) => k.parent === lead.address).map((k) => {
     const s = sessions.get(k.address);
@@ -147,7 +166,7 @@ export function kids(lead, list, sessions, t, wall) {
     return {
       id: k.address, address: k.address, title: k.label ?? k.name, label: k.label, agent: k.name, sub: k.title, status: k.status,
       model: s?.model ?? null, tools: s?.tools ?? null, ctx: s?.ctx ?? 0, now: s?.now, recent: s?.recent ?? [],
-      color: tone(s?.model, t, k.app), lastAt: s?.lastAt, program: k.program, nested,
+      color: tone(s?.model, t, k.app), lastAt: s?.lastAt, program: k.program, nested, guessed: guessed.has(k.address),
     };
   });
   return [...started, ...inner].sort((a, b) => (RANK[a.status] ?? 2) - (RANK[b.status] ?? 2) || (b.startedAt ?? 0) - (a.startedAt ?? 0));
