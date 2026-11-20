@@ -614,8 +614,9 @@ export default class AgentFlow extends View {
     return panel;
   }
 
-  // What the symbols mean, and which color is which model among those on screen.
-  legendRow(g, t) {
+  // What the symbols mean, and which color is which model among those on screen. Narrow, as
+  // in a side panel, only the marks: the models are named on every box anyway.
+  legendRow(g, t, narrow) {
     const models = new Map();
     for (const n of g.nodes) {
       const name = modelName(n.model) ?? n.name;
@@ -624,9 +625,11 @@ export default class AgentFlow extends View {
     const item = (glyph, color, text) => h_flex().flex_none().gap(4).items_center().child(div().text_color(color).child(glyph)).child(text);
     return h_flex().flex_none().flex_wrap().gap(12).items_center().text_size(11).text_color(t.dim)
       .child(item("◐", t.working, "running")).child(item("◆", t.blocked, "needs you")).child(item("●", t.done, "done"))
-      .child(item("○", t.idle, "idle")).child(item("↑↓", t.muted, "with the lead")).child(item("⇄", t.muted, "between agents"))
+      .child(item("○", t.idle, "idle"))
+      .when(narrow, (e) => e.gap(8))
+      .when(!narrow, (e) => e.child(item("↑↓", t.muted, "with the lead")).child(item("⇄", t.muted, "between agents")))
       .child(item("≈", t.muted, "guessed"))
-      .children([...models].slice(0, 8).map(([name, color]) => h_flex().flex_none().gap(4).items_center()
+      .children(narrow ? [] : [...models].slice(0, 8).map(([name, color]) => h_flex().flex_none().gap(4).items_center()
         .child(div().w(8).h(8).flex_none().bg(color)).child(middle(name, 20))));
   }
 
@@ -756,8 +759,8 @@ export default class AgentFlow extends View {
     const color = tone(session?.model, t, lead.app);
 
     return root
-      .child(h_flex().items_center().justify_between().gap(10).flex_none()
-        .child(h_flex().gap(8).flex_1().min_w(0).text_size(13).font_semibold()
+      .child(h_flex().items_center().justify_between().gap(10).flex_none().flex_wrap()
+        .child(h_flex().gap(8).flex_1().min_w(160).text_size(13).font_semibold()
           .child(div().max_w(180).truncate().flex_none().child(spaceName))
           .when(this.width >= 340, (e) => e.child(div().flex_none().text_color(t.dim).child("·"))
             .child(div().flex_1().min_w(0).truncate().text_color(color).child(modelName(session?.model) ?? lead.name)))
@@ -771,7 +774,7 @@ export default class AgentFlow extends View {
           .child(this.switcher(t))
           .child(closer)))
       .child(this.chips(leads, lead, t))
-      .when(this.legend, (e) => e.child(this.legendRow(g, t)))
+      .when(this.legend, (e) => e.child(this.legendRow(g, t, narrow)))
       .child(h_flex().flex_1().min_h(0).gap(10).items_start()
         .when(beside, (e) => e.child(this.side(lead, session, guessed, kids, t)))
         .child(picked ? div().relative().flex_1().min_w(0).h_full().child(body).child(this.nodeSide(picked, g, t, Math.min(240, room), Math.max(160, this.height - 330))) : body))

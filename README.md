@@ -18,10 +18,11 @@ press `ctrl-shift-g`. Needs Node on PATH, and Node 22 or later for opencode and 
 [RECIPE.md](RECIPE.md) is the brief to build it from scratch. `npm test` runs the tests (Node 22,
 nothing to install).
 
-The pictures show it as a side panel, opened from a Flow button beside Graph, on example data
-that ships with the mod: `herdr-app do tab.new --mod agent-flow --props '{"example":"platform","view":"map"}'`
-(or `"team"`). With no such props it shows your live agents. The key opens it as an overlay out of
-the box; the button lives in your own layout and tab bar, and RECIPE.md says how to add it.
+The pictures show it in a tab, on example data that ships with the mod:
+`herdr-app do tab.new --mod agent-flow --props '{"example":"platform","view":"map","shape":"organic"}'`
+(or `"team"`, `"diagram"`, `"timeline"`, `"stages"`). With no such props it shows your live agents.
+The key opens it as an overlay out of the box. It also fits a side panel beside Files and Changes,
+opened from a Flow button by Graph; RECIPE.md says how to add that to your own layout and tab bar.
 
 ## What it shows
 
