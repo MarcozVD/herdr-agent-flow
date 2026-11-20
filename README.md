@@ -49,17 +49,19 @@ opened from a Flow button by Graph; RECIPE.md says how to add that to your own l
   folded into `×3`.
 - **A legend** (`?` in the header) for the marks and for which color is which model, and a
   detail panel for any agent on the Map.
-- **Honest about guesses.** A session is matched to its terminal by agent and folder. When a
-  folder holds two of one agent that's a guess, and the model shows `≈`. When an agent update
-  changes a file it reads, the header says `⚠ format changed` and names what's missing.
+- **Honest about guesses.** A Claude Code session is matched to its terminal by its process,
+  exactly. Other agents' sessions are matched by agent and folder; when a folder holds two of
+  one agent that's a guess, and the model shows `≈`. When an agent update changes a file it
+  reads, the header says `⚠ format changed` and names what's missing.
 
 ## What it reads
 
 The mod runs `node mods/agent-flow/scan.cjs` every 3 seconds while it's on screen, and only
 reads local files: Claude Code's session transcripts in `~/.claude`, opencode's database in
 `~/.local/share/opencode`, Codex's state in `~/.codex` and Oh My Pi's session files in
-`~/.omp/agent/sessions`, the last three read-only. It reaches no network. On screen you get
-tool names and short hints such as a file name or the start of a command, never prompts or
+`~/.omp/agent/sessions`, the last three read-only. It reaches no network. To tell which Claude Code session runs in which terminal it also reads
+the process list, once per new session (`/proc`, `ps`, or `Win32_Process` on Windows). On screen
+you get tool names and short hints such as a file name or the start of a command, never prompts or
 tool output. Messages are seen through `hc send`, Claude Code's
 `SendMessage` and the tags `hc` adds on arrival; for those it keeps the target and the sender, not
 the text.

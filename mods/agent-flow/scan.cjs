@@ -9,6 +9,7 @@
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const { execFileSync } = require("child_process");
 
 const root = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), ".claude");
 const projects = path.join(root, "projects");
@@ -355,6 +356,71 @@ function codex(folders) {
   return model ? folders.map((cwd, i) => ({ ...blank, id: `codex-${i}`, agent: "codex", cwd, model, lastAt: 0 })) : [];
 }
 
+// Which terminal each Claude Code session runs in. main.js passes `term=<pid>@<address>` for
+// each terminal; a session belongs to the terminal whose pid is its own process's or its
+// nearest ancestor's (claude.exe <- pwsh.exe, the terminal's shell). That pairs them exactly,
+// where agent and folder alone are a guess once a folder has two sessions.
+function owners(list) {
+  const terms = new Map();
+  for (const a of process.argv.slice(2)) {
+    if (!a.startsWith("term=")) continue;
+    const at = a.indexOf("@");
+    const pid = Number(a.slice(5, at));
+    if (at > 5 && pid > 0) terms.set(pid, a.slice(at + 1));
+  }
+  if (!terms.size) return;
+  // A process keeps its parents for life, so each session's chain is looked up once, when
+  // it first shows, and kept in the cache by pid and start time (a pid can be reused).
+  const known = cache.chains ?? {};
+  cache.chains = {};
+  let parentOf = null;
+  for (const s of list) {
+    if (!s.pid) continue;
+    const key = `${s.pid}:${s.startedAt ?? 0}`;
+    let chain = known[key];
+    if (!chain) {
+      parentOf ??= processTable();
+      chain = [];
+      for (let p = s.pid; p && chain.length < 16 && !chain.includes(p); p = parentOf(p)) chain.push(p);
+    }
+    cache.chains[key] = chain;
+    const hit = chain.find((p) => terms.has(p));
+    if (hit) s.terminal = terms.get(hit);
+  }
+}
+
+// Every process's parent, read once: /proc on Linux, `ps` on macOS, Win32_Process on Windows
+// (about half a second, which is why chains are cached). `AGENT_FLOW_PROCS`, as
+// "pid ppid,pid ppid", stands in for it in tests.
+function processTable() {
+  const table = new Map();
+  const fill = (text, sep) => {
+    for (const line of text.split(sep)) {
+      const [pid, ppid] = line.trim().split(/\s+/).map(Number);
+      if (pid) table.set(pid, ppid || null);
+    }
+  };
+  const fake = process.env.AGENT_FLOW_PROCS;
+  if (fake != null) { fill(fake, ","); return (p) => table.get(p) ?? null; }
+  if (process.platform === "linux") {
+    return (p) => {
+      try {
+        const stat = fs.readFileSync(`/proc/${p}/stat`, "utf8");
+        return Number(stat.slice(stat.lastIndexOf(")") + 2).split(" ")[1]) || null;
+      } catch { return null; }
+    };
+  }
+  try {
+    const out = process.platform === "win32"
+      ? execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command",
+        "Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId | ForEach-Object { \"$($_.ProcessId) $($_.ParentProcessId)\" }"],
+      { timeout: 15000, windowsHide: true, stdio: ["ignore", "pipe", "ignore"] })
+      : execFileSync("ps", ["-A", "-o", "pid=,ppid="], { timeout: 10000, stdio: ["ignore", "pipe", "ignore"] });
+    fill(out.toString(), /\r?\n/);
+  } catch { /* no process list: sessions fall back to agent and folder */ }
+  return (p) => table.get(p) ?? null;
+}
+
 // Where an Oh My Pi session ran, from its own first rows: `{ "type": "session", "cwd" }`.
 // Null for a file without one (an older version), which then goes by its folder's name.
 function ompCwd(file) {
@@ -440,6 +506,7 @@ for (const name of dir) {
   } catch { /* a transcript vanished mid-read; the next scan sees the truth */ }
 }
 for (const s of sessions) s.agent = "claude-code";
+owners(sessions);
 sessions.push(...opencode(wanted("opencode")), ...codex(wanted("codex")), ...omp(wanted("omp")));
 saveCache();
 sessions.sort((a, b) => b.lastAt - a.lastAt);

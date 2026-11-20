@@ -119,7 +119,12 @@ export default class AgentFlow extends View {
   refresh(cx) {
     if (this.busy || !visible()) return;
     const list = this.world().agents;
-    const asks = list.filter((a) => SCANNED.includes(a.app)).map((a) => `${a.app}=${a.cwd}`);
+    // Folders for the agents scan.cjs reads by folder, and each Claude Code terminal's pid so
+    // it can tell which session runs in which terminal.
+    const asks = [
+      ...list.filter((a) => SCANNED.includes(a.app)).map((a) => `${a.app}=${a.cwd}`),
+      ...list.filter((a) => a.app === "claude-code" && a.pid > 0).map((a) => `term=${a.pid}@${a.address}`),
+    ];
     if (!asks.length && !list.some((a) => a.app === "claude-code")) {
       if (this.scan.sessions.length) { this.scan = { sessions: [] }; this.raw = ""; cx.notify(); }
       return;

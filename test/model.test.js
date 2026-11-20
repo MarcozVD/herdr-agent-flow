@@ -118,3 +118,25 @@ test("a terminal reporting pi is Oh My Pi", () => {
   const { agents } = M.normalize([{ address: "t1", state: "live", report: { app: "pi" } }], []);
   assert.equal(agents[0].app, "omp");
 });
+
+test("sessions traced to their terminal pair exactly, and aren't guesses", () => {
+  const list = [
+    { address: "a", app: "claude-code", cwd: "/repo", status: "working" },
+    { address: "b", app: "claude-code", cwd: "/repo", status: "idle" },
+    { address: "c", app: "claude-code", cwd: "/repo", status: "idle" },
+  ];
+  const sessions = [
+    { id: "s1", agent: "claude-code", cwd: "/repo", terminal: "b" }, // most recent, but b's
+    { id: "s2", agent: "claude-code", cwd: "/repo", terminal: "a" },
+    { id: "s3", agent: "claude-code", cwd: "/repo", terminal: "elsewhere" }, // nobody else's
+    { id: "s4", agent: "claude-code", cwd: "/repo" },
+  ];
+  const { found, guessed } = M.pair(list, sessions);
+  assert.deepEqual([found.get("a").id, found.get("b").id, found.get("c").id], ["s2", "s1", "s4"]);
+  assert.deepEqual([...guessed], []); // c was the only terminal left, with the only session left
+});
+
+test("normalize keeps each terminal's pid", () => {
+  const { agents } = M.normalize([{ address: "t1", state: "live", pid: 24572, report: { app: "claude" } }], []);
+  assert.equal(agents[0].pid, 24572);
+});

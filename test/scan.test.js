@@ -204,3 +204,19 @@ test("Oh My Pi: two terminals in one folder take its two newest sessions", () =>
   const found = scanOmp("omp-two", agent, path.join(home, "nohome"), win("D:", "repo"), "d:/repo");
   assert.deepEqual(found.map((s) => s.id), ["newer", "older"]);
 });
+
+test("a session is traced to the terminal whose pid is its process's ancestor", () => {
+  const dir = path.join(home, "owner");
+  setup(dir, lines(rows));
+  const cache = path.join(home, "owner.json");
+  const run = (args, procs) => JSON.parse(execFileSync(process.execPath, ["--no-warnings", SCAN, ...args], {
+    env: { ...process.env, CLAUDE_CONFIG_DIR: dir, AGENT_FLOW_CACHE: cache, AGENT_FLOW_PROCS: procs },
+  }).toString()).sessions[0];
+  // This test's process <- a shell (999) <- Herdr (1), as claude.exe <- pwsh.exe <- herdr-core.
+  assert.equal(run(["term=999@t7", "term=555@t8"], `${process.pid} 999,999 1`).terminal, "t7");
+  // The chain is cached: no process table is needed again for the same session.
+  assert.equal(run(["term=999@t7"], "").terminal, "t7");
+  // A terminal pid that isn't an ancestor pairs nothing; nor do no pids at all.
+  assert.equal(run(["term=555@t8"], "").terminal, undefined);
+  assert.equal(run([], "").terminal, undefined);
+});

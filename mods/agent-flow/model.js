@@ -49,7 +49,7 @@ export function normalize(raw, listed) {
     const seen = byAgent.get(k.address);
     const word = seen?.status ?? k.status;
     return {
-      address: k.address, parent: k.parent ?? null, cwd: k.cwd ?? null, app: appOf(k), program: k.program,
+      address: k.address, parent: k.parent ?? null, cwd: k.cwd ?? null, app: appOf(k), program: k.program, pid: k.pid ?? null,
       status: word === "error" ? "blocked" : word, label: k.name ?? null, seq: seen?.seq ?? 0,
       space: seen?.space ?? k.labels?.["herdr.space"] ?? null,
       name: k.program?.name ?? k.report?.app ?? k.address,
@@ -63,20 +63,24 @@ export function normalize(raw, listed) {
   return { agents: all.filter((k) => flags.get(k.address)), plain: all.filter((k) => !flags.get(k.address)) };
 }
 
-// Sessions don't name their terminal, so they pair up by agent and folder; with several of
-// one agent in a folder, the busiest terminal takes the most recently active session. That
-// is a guess whenever a folder has more than one terminal or more than one session of an
-// agent (one may run outside Herdr), and `guessed` names those terminals so the view can
-// say so instead of passing someone else's model off as theirs.
+// A session that scan.cjs traced to its terminal's process (`terminal`) pairs with it
+// exactly. The rest pair up by agent and folder; with several of one agent in a folder, the
+// busiest terminal takes the most recently active session. That is a guess whenever a
+// folder has more than one such terminal or session (one may run outside Herdr), and
+// `guessed` names those terminals so the view can say so instead of passing someone else's
+// model off as theirs. A session traced to a terminal outside `list` is nobody else's.
 export function pair(list, sessions) {
-  const free = [...sessions];
   const found = new Map();
+  const live = new Set(list.map((a) => a.address));
+  for (const s of sessions) if (s.terminal && live.has(s.terminal) && !found.has(s.terminal)) found.set(s.terminal, s);
+  const free = sessions.filter((s) => !s.terminal);
+  const open = list.filter((a) => !found.has(a.address));
   const where = (agent, cwd) => `${agent}|${norm(cwd)}`;
   const count = (keys) => keys.reduce((m, k) => m.set(k, (m.get(k) ?? 0) + 1), new Map());
-  const terms = count(list.map((a) => where(a.app, a.cwd)));
-  const held = count(sessions.map((s) => where(s.agent, s.cwd)));
+  const terms = count(open.map((a) => where(a.app, a.cwd)));
+  const held = count(free.map((s) => where(s.agent, s.cwd)));
   const guessed = new Set();
-  for (const a of [...list].sort((x, y) => (RANK[x.status] ?? 9) - (RANK[y.status] ?? 9))) {
+  for (const a of [...open].sort((x, y) => (RANK[x.status] ?? 9) - (RANK[y.status] ?? 9))) {
     const i = free.findIndex((s) => s.agent === a.app && norm(s.cwd) === norm(a.cwd));
     if (i < 0) continue;
     found.set(a.address, free.splice(i, 1)[0]);
