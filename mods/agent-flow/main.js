@@ -6,12 +6,12 @@
 // show running or finished, and numbers are counted, never guessed.
 
 import { View, div, image, svg, PathBuilder } from "gpui-kit";
-import { v_flex, h_flex } from "gpui-base";
+import { v_flex, h_flex, ScrollHandle } from "gpui-base";
 import { agents, terminals, panes, spaces, focused, theme, props, run, exec, appHome, closeOverlay, layout } from "herdr";
 import * as team from "./examples/team.js";
 import * as platform from "./examples/platform.js";
 import { SHAPES, choose } from "./shapes.js";
-import { RANK, modelName, tone, normalize, pair, graph, links, kids } from "./model.js";
+import { RANK, modelName, tone, middle, normalize, pair, graph, links, kids } from "./model.js";
 
 const MOD = "agent-flow";
 const FONT = "JetBrains Mono";
@@ -29,6 +29,9 @@ const SHAPE_NAMES = { auto: "Auto", tree: "Tree", stages: "Stages", radial: "Rad
 const NODE_H = 44;
 const SPIN = ["◐", "◓", "◑", "◒"];
 const SCANNED = ["opencode", "codex"]; // agents whose folder scan.cjs must be told
+const GUESS = "Guessed: this folder has more than one session of this agent, so the model and tools may be another terminal's";
+const TALK = "↑ messages sent to the lead · ↓ messages from it";
+const fit = (px, size = 12) => Math.max(4, Math.floor(px / (size * 0.6)));
 
 const stateColor = (s, t) => ({ working: t.working, blocked: t.blocked, done: t.done, idle: t.idle, stale: t.unknown })[s] ?? t.dim;
 const stateWord = (s) => ({ working: "running", blocked: "needs you", done: "done", idle: "idle", stale: "no activity" })[s] ?? s ?? "";
@@ -43,6 +46,13 @@ function elapsed(ms) {
   if (s < 60) return `${s}s`;
   const m = Math.floor(s / 60);
   return m < 60 ? `${m}m` : `${Math.floor(m / 60)}h ${m % 60}m`;
+}
+
+// What to do about a scan that failed, for its tooltip.
+function diagnose(error) {
+  if (/ENOENT|not found|not recognized|spawn/i.test(error)) return `${error}\n\nNode isn't on PATH. Install Node 22 or later and restart Herdr.`;
+  if (/sqlite/i.test(error)) return `${error}\n\nNode 22 or later is needed to read opencode's and Codex's databases.`;
+  return `${error}\n\nRun node mods/agent-flow/scan.cjs from Herdr's home folder to see the whole error.`;
 }
 
 function icon(p, size, color) {
@@ -78,10 +88,15 @@ export default class AgentFlow extends View {
     this.error = null;
     this.status = {};       // address -> last status, to log changes
     this.events = [];
-    this.view = [props()?.view, localStorage.getItem("view")].find((v) => VIEWS[v]) ?? "diagram";
+    this.view = [props()?.view, this.stored("view")].find((v) => VIEWS[v]) ?? "diagram";
     this.expanded = false;  // "+N more" asked for every box, as a list
-    this.shape = [props()?.shape, localStorage.getItem("shape")].find((v) => SHAPE_NAMES[v]) ?? "auto";
+    this.shape = [props()?.shape, this.stored("shape")].find((v) => SHAPE_NAMES[v]) ?? "auto";
     this.placed = null;     // the Map's last layout; it only moves when the graph does
+    this.sel = null;        // the Map node shown in the detail panel
+    this.legend = this.stored("legend") !== "off";
+    this.logOpen = false;   // the log taller, on a click on its title
+    this.logScroll = ScrollHandle.new();
+    this.logEnd = null;     // the newest row shown, to keep the log at its end
     this.width = 900;
     this.height = 800;
     if (this.sample) return;
@@ -91,6 +106,14 @@ export default class AgentFlow extends View {
 
   now() {
     return this.sample ? this.sample.data.now : Date.now();
+  }
+
+  // localStorage can be missing or refuse; the view works without it.
+  stored(key) {
+    try { return localStorage.getItem(key); } catch { return null; }
+  }
+  store(key, value) {
+    try { localStorage.setItem(key, value); } catch { /* not remembered */ }
   }
 
   refresh(cx) {
@@ -264,7 +287,7 @@ export default class AgentFlow extends View {
       .when(!!n.address, (e) => e.cursor_pointer().hover((s) => s.bg(t.hover)).on_click((_e, cx) => { cx.stop_propagation(); this.peek(n.address); }))
       .child(div().flex_none().text_color(t.dim).child("└"))
       .child(this.mark(n.status, t))
-      .child(div().flex_1().min_w(0).truncate().text_color(n.color).child(`${n.name}${n.model ? ` · ${modelName(n.model)}` : ""}`)))
+      .child(div().flex_1().min_w(0).truncate().text_color(n.color).child(`${n.name}${n.model ? ` · ${middle(modelName(n.model), 18)}` : ""}`)))
       .concat((k.nested?.length ?? 0) > 3 ? [div().pl(14).text_color(t.dim).child(`+${k.nested.length - 3} more`)] : []);
   }
 
@@ -279,29 +302,40 @@ export default class AgentFlow extends View {
     return div().w(1).h(h).bg(color).flex_none();
   }
 
+  // An agent's model in `chars` characters, cut in the middle where names differ most, and
+  // marked `≈` when its session was matched to the terminal by a guess.
+  modelTag(id, model, guessed, color, t, chars, size = 12) {
+    const name = modelName(model) ?? "model unknown";
+    // Short names read better cut at the end ("Haiku 5…"); long ids differ in the middle.
+    const text = name.length > 14 ? middle(name, guessed ? chars - 2 : chars) : name;
+    return div().id(`model-${id}`).max_w_full().truncate().text_size(size).text_color(model ? color : t.dim)
+      .child(guessed ? `${text} ≈` : text)
+      .when(guessed, (e) => e.tooltip(GUESS));
+  }
+
   // The two lines every agent gets: which agent, and which model.
-  who(name, model, program, color, t) {
+  who(id, name, model, guessed, program, color, t, px) {
     return v_flex().items_center().gap(1).w_full()
       .child(h_flex().gap(6).items_center().max_w_full()
         .child(icon(program, 14, color) ?? div())
         .child(div().truncate().font_semibold().text_color(t.foreground).child(name)))
-      .child(div().w_full().text_center().truncate().text_color(model ? color : t.dim).child(modelName(model) ?? "model unknown"));
+      .child(h_flex().w_full().justify_center().child(this.modelTag(id, model, guessed, color, t, fit(px))));
   }
 
-  leadBox(lead, session, t, full) {
+  leadBox(lead, session, guessed, t, full) {
     const color = tone(session?.model, t, lead.app);
     const tools = session?.tools;
     return v_flex().id("lead").when(full, (e) => e.w_full()).when(!full, (e) => e.w(300).max_w_full()).p(9).gap(3).items_center().flex_none().bg(t.background)
       .border(this.kid === null ? 2 : 1).border_color(color).cursor_pointer()
       .on_click((_e, cx) => { this.kid = null; cx.notify(); })
-      .child(this.who(lead.name, session?.model, lead.program, color, t))
+      .child(this.who("lead", lead.name, session?.model, guessed, lead.program, color, t, full ? this.width - 60 : 280))
       .child(div().w_full().text_center().truncate().text_color(t.foreground).child(lead.title || lead.address))
       .child(h_flex().gap(6).max_w_full().items_center().text_color(t.muted)
         .child(this.mark(lead.status, t))
         .child(div().truncate().child(session?.now ? toolLine(session.now) : stateWord(lead.status))))
       .when(tools != null, (e) => e.child(h_flex().gap(10).text_color(t.dim)
         .child(`${count(tools, session.more)} this turn`)
-        .when(session.ctx > 0, (x) => x.child(`ctx ${tokens(session.ctx)}`))));
+        .when(session.ctx > 0, (x) => x.child(div().id("lead-ctx").child(`ctx ${tokens(session.ctx)}`).tooltip("Context: tokens the model holds this turn")))));
   }
 
   kidBox(k, t, width, flowBy) {
@@ -314,13 +348,13 @@ export default class AgentFlow extends View {
       .border(this.kid === k.id ? 2 : 1).border_color(color).cursor_pointer()
       .hover((s) => s.bg(t.hover))
       .on_click((_e, cx) => { this.kid = this.kid === k.id ? null : k.id; cx.notify(); })
-      .child(this.who(name, k.model, k.program, k.color, t))
+      .child(this.who(k.id, name, k.model, k.guessed, k.program, k.color, t, width))
       .child(this.bar(k.status, k.color, t, width))
       .child(div().w_full().text_center().truncate().text_color(t.muted).child(k.now ? toolLine(k.now) : k.sub || " "))
       .child(h_flex().gap(6).items_center().text_color(t.dim)
         .child(this.mark(k.status, t)).child(stateWord(k.status))
         .when(k.tools != null && !tight, (e) => e.child(`· ${count(k.tools, k.more)}`))
-        .when(!!talk, (e) => e.child(div().text_color(t.foreground).child(talk))))
+        .when(!!talk, (e) => e.child(div().id(`talk-${k.id}`).text_color(t.foreground).child(talk).tooltip(TALK))))
       .children(this.nested(k, t));
   }
 
@@ -329,8 +363,8 @@ export default class AgentFlow extends View {
     const color = tone(session?.model, t, lead.app);
     return v_flex().when(full, (e) => e.w_full()).when(!full, (e) => e.w(300).max_w_full()).p(7).items_center().flex_none().bg(t.background)
       .border(1).border_color(open ? t.border : color)
-      .child(div().text_color(open ? t.muted : color).font_semibold().child(`back to ${lead.name}`))
-      .child(div().text_color(t.dim).child(open ? `waiting on ${open} of ${kids.length}` : `${kids.length} of ${kids.length} back`));
+      .child(div().text_color(open ? t.muted : color).font_semibold().child(`results return to ${lead.name}`))
+      .child(div().text_color(t.dim).child(open ? `${open} of ${kids.length} still running` : `all ${kids.length} back`));
   }
 
   // Tools of the box that's open, in narrow views, where there's no side panel to show them.
@@ -357,10 +391,10 @@ export default class AgentFlow extends View {
           .child(icon(k.program, 13, k.color) ?? div())
           .child(div().flex_1().min_w(0).truncate().font_semibold().child(name))
           .when(k.tools != null, (e) => e.child(div().flex_none().text_color(t.dim).child(count(k.tools, k.more)))))
-        .child(div().truncate().text_color(k.model ? k.color : t.dim).child(modelName(k.model) ?? "model unknown"))
+        .child(this.modelTag(k.id, k.model, k.guessed, k.color, t, fit(this.width - 70)))
         .child(this.bar(k.status, k.color, t, this.width))
         .child(div().truncate().text_color(t.muted).child(k.now ? toolLine(k.now) : k.sub || stateWord(k.status)))
-        .when(!!talk, (e) => e.child(div().text_color(t.foreground).child(talk)))
+        .when(!!talk, (e) => e.child(div().id(`talk-${k.id}`).text_color(t.foreground).child(talk).tooltip(TALK)))
         .children(this.nested(k, t))
         .when(open, (e) => e.child(this.details(k, t))));
   }
@@ -378,6 +412,7 @@ export default class AgentFlow extends View {
   // A sequence diagram of the whole space: a column per agent, a row per thing that passed
   // between two of them, oldest on top. Flows that never touch the chosen lead show too.
   timeline(lead, g, t, room, bg) {
+    const label = (n) => n.role ?? (g.byKey.has(n.parent) ? n.name : n.title || n.name);
     const gutter = room >= 560 ? 64 : 0;
     const active = new Set(g.events.flatMap((e) => [e.from, e.to]));
     const cols = [...g.nodes].sort((a, b) => (b.key === lead.address) - (a.key === lead.address) || active.has(b.key) - active.has(a.key))
@@ -391,8 +426,8 @@ export default class AgentFlow extends View {
     const header = div().relative().w_full().h(40).flex_none().children(cols.map((c, i) =>
       v_flex().absolute().top(0).left(Math.round(gutter + i * cell)).w(Math.floor(cell)).px(3).items_center()
         .child(h_flex().gap(4).max_w_full().items_center().child(icon(c.program, 12, c.color) ?? div())
-          .child(div().truncate().font_semibold().child(c.role ?? c.name)))
-        .child(div().max_w_full().truncate().text_color(c.model ? c.color : t.dim).child(modelName(c.model) ?? "model unknown"))));
+          .child(div().truncate().font_semibold().child(label(c))))
+        .child(this.modelTag(`col-${c.key}`, c.model, c.guessed, c.color, t, fit(cell - 6)))));
     const line = (e, i) => {
       const a = x(e.from);
       const b = x(e.to);
@@ -475,26 +510,30 @@ export default class AgentFlow extends View {
     const nodes = g.nodes.filter((n) => pos.has(n.key)).map((n) => {
       const p = pos.get(n.key);
       const up = ups.get(n.key) ?? 0;
+      const root = !n.parent || !byKey.has(n.parent);
       const quiet = n.status === "idle" || n.status === "stale";
       return v_flex().id(`node-${n.key}`).absolute().left(Math.round(p.x)).top(Math.round(p.y)).w(W).h(NODE_H).px(6).justify_center().bg(t.background)
         .transition("left", { duration: 450 }).transition("top", { duration: 450 })
-        .border(!n.parent || !byKey.has(n.parent) ? 2 : 1).border_color(quiet ? t.border : n.status === "blocked" ? t.blocked : n.color)
-        .when(!!n.terminal, (e) => e.cursor_pointer().hover((s) => s.bg(t.hover)).on_click((_e, cx) => {
-          if (!n.parent || !byKey.has(n.parent)) { this.pick = n.key; this.kid = null; cx.notify(); } else this.peek(n.terminal);
-        }))
+        .border(root ? 2 : 1).border_color(quiet ? t.border : n.status === "blocked" ? t.blocked : n.color)
+        .when(this.sel === n.key, (e) => e.bg(t.selected))
+        .cursor_pointer().hover((s) => s.bg(t.hover)).on_click((_e, cx) => {
+          if (root) { this.pick = n.key; this.kid = null; }
+          this.sel = this.sel === n.key ? null : n.key;
+          cx.notify();
+        })
         .child(h_flex().gap(4).items_center().min_w(0)
           .child(this.mark(n.status, t))
           .child(icon(n.program, 11, n.color) ?? div())
-          .child(div().flex_1().min_w(0).truncate().font_semibold().child(n.role ?? n.name))
-          .when(up > 0, (e) => e.child(div().flex_none().text_color(t.muted).child(`↑${up}`))))
-        .child(div().truncate().text_size(11).text_color(n.model ? n.color : t.dim).child(modelName(n.model) ?? n.name));
+          .child(div().flex_1().min_w(0).truncate().font_semibold().child(root ? n.title || n.name : n.role ?? n.name))
+          .when(up > 0, (e) => e.child(div().id(`up-${n.key}`).flex_none().text_color(t.muted).child(`↑${up}`).tooltip("Messages sent to its parent"))))
+        .child(this.modelTag(`node-${n.key}`, n.model, n.guessed, n.color, t, fit(W - 12, 11), 11));
     });
 
     const labels = columns.map((c) => div().absolute().top(0).left(c.x).text_size(11).text_color(t.dim).child(c.text));
     const running = g.nodes.filter((n) => n.status === "working").length;
     const pickShape = ([id, label]) => div().id(`shape-${id}`).px(5).rounded(3).cursor_pointer()
       .bg(this.shape === id ? t.selected : "#00000000").text_color(this.shape === id ? t.foreground : t.muted)
-      .hover((e) => e.bg(t.hover)).on_click((_e, cx) => { this.shape = id; localStorage.setItem("shape", id); cx.notify(); })
+      .hover((e) => e.bg(t.hover)).on_click((_e, cx) => { this.shape = id; this.store("shape", id); cx.notify(); })
       .child(id === "auto" && this.shape === "auto" ? `Auto: ${SHAPE_NAMES[shape]}` : label);
     return v_flex().id("flow").flex_1().min_w(0).h_full().gap(6).overflow_y_scroll()
       .child(h_flex().flex_none().flex_wrap().justify_between().gap(8)
@@ -507,9 +546,9 @@ export default class AgentFlow extends View {
         div().flex_none().text_color(now - l.last < LINK_LIVE_MS ? t.foreground : t.dim).child(`⇄ ${l.fromRole} → ${l.toRole}${l.n > 1 ? ` ×${l.n}` : ""}`)))));
   }
 
-  flow(lead, session, kids, flows, flowBy, t, room, bg) {
+  flow(lead, session, guessed, kids, flows, flowBy, t, room, bg) {
     const narrow = room < NARROW || this.expanded;
-    const flow = v_flex().id("flow").flex_1().min_w(0).h_full().items_center().overflow_y_scroll().child(this.leadBox(lead, session, t, narrow));
+    const flow = v_flex().id("flow").flex_1().min_w(0).h_full().items_center().overflow_y_scroll().child(this.leadBox(lead, session, guessed.has(lead.address), t, narrow));
     if (!kids.length) return flow.child(this.stem(t.border, 16)).child(div().text_color(t.dim).pb(4).child("no agents delegated"));
     const models = [...new Set(kids.map((k) => modelName(k.model)).filter(Boolean))];
     if (narrow) {
@@ -541,18 +580,18 @@ export default class AgentFlow extends View {
   }
 
   row(key, value, t, color) {
-    return h_flex().justify_between().gap(8).child(div().text_color(t.dim).flex_none().child(key))
+    return h_flex().flex_none().justify_between().gap(8).child(div().text_color(t.dim).flex_none().child(key))
       .child(div().truncate().text_color(color ?? t.foreground).child(String(value)));
   }
 
-  side(lead, session, kids, t) {
+  side(lead, session, guessed, kids, t) {
     const k = kids.find((x) => x.id === this.kid) ?? null;
     const model = k ? k.model : session?.model;
     const color = k ? k.color : tone(model, t, lead.app);
     const list = (k ? k.recent : session?.recent) ?? [];
     const tools = k ? k.tools : session?.tools;
     const panel = v_flex().w(226).h_full().flex_none().p(10).gap(5).bg(t.background).border(1).border_color(color).overflow_hidden()
-      .child(this.who(k ? k.agent : lead.name, model, k ? k.program : lead.program, color, t))
+      .child(this.who("side", k ? k.agent : lead.name, model, k ? k.guessed : guessed.has(lead.address), k ? k.program : lead.program, color, t, 206))
       .child(div().truncate().text_center().text_color(t.muted).child(k ? (k.address ? `${k.title} · ${k.address}` : `${k.title} · subagent`) : `${lead.address} · lead`))
       .child(div().h(1).bg(t.border).flex_none())
       .child(this.row("state", stateWord(k ? k.status : lead.status), t, stateColor(k ? k.status : lead.status, t)));
@@ -575,6 +614,59 @@ export default class AgentFlow extends View {
     return panel;
   }
 
+  // What the symbols mean, and which color is which model among those on screen.
+  legendRow(g, t) {
+    const models = new Map();
+    for (const n of g.nodes) {
+      const name = modelName(n.model) ?? n.name;
+      if (!models.has(name)) models.set(name, n.model ? n.color : t.dim);
+    }
+    const item = (glyph, color, text) => h_flex().flex_none().gap(4).items_center().child(div().text_color(color).child(glyph)).child(text);
+    return h_flex().flex_none().flex_wrap().gap(12).items_center().text_size(11).text_color(t.dim)
+      .child(item("◐", t.working, "running")).child(item("◆", t.blocked, "needs you")).child(item("●", t.done, "done"))
+      .child(item("○", t.idle, "idle")).child(item("↑↓", t.muted, "with the lead")).child(item("⇄", t.muted, "between agents"))
+      .child(item("≈", t.muted, "guessed"))
+      .children([...models].slice(0, 8).map(([name, color]) => h_flex().flex_none().gap(4).items_center()
+        .child(div().w(8).h(8).flex_none().bg(color)).child(middle(name, 20))));
+  }
+
+  // The Map's detail panel: any node at any depth, terminal or subagent. It floats over the
+  // map's top right, so opening it doesn't squeeze and rearrange the map under it.
+  nodeSide(n, g, t, width, height) {
+    const s = n.session;
+    const parent = g.byKey.get(n.parent);
+    const tools = s?.tools;
+    const panel = v_flex().id("node-side").absolute().top(this.width < NARROW ? 58 : 32).right(0).w(width).max_h(height)
+      .p(10).gap(5).bg(t.background).border(1).border_color(n.color).overflow_y_scroll()
+      .child(h_flex().flex_none().justify_between().gap(6)
+        .child(this.who("node-side", n.role ?? n.name, n.model, n.guessed, n.program, n.color, t, 180))
+        .child(this.button("node-close", "✕", t, () => { this.sel = null; })))
+      .child(div().flex_none().truncate().text_center().text_color(t.muted)
+        .child(n.terminal ? `${n.name} · ${n.terminal}` : `${n.name} · subagent of ${parent?.role ?? parent?.title ?? parent?.name ?? "?"}`))
+      .child(div().h(1).bg(t.border).flex_none())
+      .child(this.row("state", stateWord(n.status), t, stateColor(n.status, t)));
+    if (tools != null) panel.child(this.row("tools", `${s.more ? "≥" : ""}${tools}${n.terminal ? " this turn" : ""}`, t));
+    if (s?.ctx) panel.child(this.row("context", tokens(s.ctx), t));
+    if (s?.startedAt && !n.terminal) panel.child(this.row("ran for", elapsed((n.status === "working" ? Date.now() : s.lastAt) - s.startedAt), t));
+    if (s?.now) panel.child(this.row("now", toolLine(s.now), t));
+    const about = n.terminal ? n.title : s?.description;
+    if (about) panel.child(div().flex_none().mt(2).text_color(t.muted).child(about));
+    panel.child(div().flex_none().mt(4).text_color(t.dim).child("last tools"));
+    panel.child(v_flex().flex_none().gap(1).children(
+      ((s?.recent ?? []).filter((x) => !x.back).slice(-8).length ? s.recent.filter((x) => !x.back).slice(-8) : [{ name: "none seen", hint: "" }])
+        .map((x, i) => div().id(`node-tool-${i}`).truncate().text_color(t.foreground).child(`» ${toolLine(x)}`))));
+    if (n.terminal) {
+      panel.child(h_flex().flex_none().gap(4)
+        .child(this.button("node-peek", "peek", t, () => this.peek(n.terminal)))
+        .child(this.button("node-go", "go to terminal", t, () => {
+          if (this.sample) return;
+          run("agent.focus", { terminal: n.terminal });
+          this.close();
+        })));
+    }
+    return panel;
+  }
+
   peek(address) {
     if (!this.sample) run("terminal.peek", { terminal: address });
   }
@@ -582,7 +674,7 @@ export default class AgentFlow extends View {
   switcher(t) {
     const tab = ([id, label]) => div().id(`view-${id}`).px(6).rounded(3).cursor_pointer()
       .bg(this.view === id ? t.selected : "#00000000").text_color(this.view === id ? t.foreground : t.muted)
-      .hover((s) => s.bg(t.hover)).on_click((_e, cx) => { this.view = id; localStorage.setItem("view", id); cx.notify(); }).child(label);
+      .hover((s) => s.bg(t.hover)).on_click((_e, cx) => { this.view = id; this.store("view", id); cx.notify(); }).child(label);
     return h_flex().gap(2).flex_none().children(Object.entries(VIEWS).map(tab));
   }
 
@@ -603,14 +695,27 @@ export default class AgentFlow extends View {
     }));
   }
 
+  // The whole log scrolls; it follows the newest row unless nothing new came. A click on its
+  // title makes it taller. The same line said again in a row shows once, with a count.
   logBox(rows, t, narrow) {
     const short = this.height < SHORT;
-    return v_flex().id("log").h(short ? 96 : 132).flex_none().p(8).gap(1).bg(t.background).border(1).border_color(t.border).overflow_hidden()
-      .child(div().text_color(t.dim).child("session log"))
-      .child(v_flex().flex_1().min_h(0).justify_end().overflow_hidden().children(rows.slice(short ? -3 : -6).map((r) =>
-        h_flex().gap(narrow ? 6 : 10).when(!narrow, (e) => e.child(div().flex_none().text_color(t.dim).child(clock(r.t))))
+    const runs = [];
+    for (const r of rows) {
+      const last = runs.at(-1);
+      if (last && last.who === r.who && last.text === r.text) { last.n++; last.t = r.t; } else runs.push({ ...r, n: 1 });
+    }
+    const end = runs.length ? `${runs.length}|${runs.at(-1).t}|${runs.at(-1).n}` : null;
+    if (end !== this.logEnd) { this.logEnd = end; if (runs.length) this.logScroll.scroll_to_item(runs.length - 1); }
+    const h = this.logOpen ? Math.max(180, Math.round(this.height * 0.4)) : short ? 96 : 132;
+    return v_flex().id("log").h(h).flex_none().p(8).gap(1).bg(t.background).border(1).border_color(t.border).overflow_hidden()
+      .child(h_flex().id("log-title").justify_between().cursor_pointer().text_color(t.dim).hover((s) => s.text_color(t.foreground))
+        .on_click((_e, cx) => { this.logOpen = !this.logOpen; this.logEnd = null; cx.notify(); })
+        .child("session log").child(this.logOpen ? "less ▾" : "more ▴"))
+      .child(v_flex().id("log-rows").flex_1().min_h(0).overflow_y_scroll().track_scroll(this.logScroll).children(runs.map((r, i) =>
+        h_flex().id(`log-${i}`).flex_none().gap(narrow ? 6 : 10).when(!narrow, (e) => e.child(div().flex_none().text_color(t.dim).child(clock(r.t))))
           .child(div().w(narrow ? 76 : 92).flex_none().truncate().text_color(r.color).child(r.who))
-          .child(div().flex_1().min_w(0).truncate().text_color(t.foreground).child(r.text)))));
+          .child(div().flex_1().min_w(0).truncate().text_color(t.foreground).child(r.text))
+          .when(r.n > 1, (e) => e.child(div().flex_none().text_color(t.dim).child(`×${r.n}`))))));
   }
 
   render() {
@@ -619,7 +724,7 @@ export default class AgentFlow extends View {
     const { agents: all, plain } = world;
     // The space it's called from: props().space pins a copy to one space.
     const spaceId = this.sample ? null : props()?.space ?? focused()?.space ?? null;
-    if (spaceId !== this.space) { this.space = spaceId; this.pick = this.sample ? "t1" : null; this.lastLead = null; this.kid = null; this.expanded = false; }
+    if (spaceId !== this.space) { this.space = spaceId; this.pick = this.sample ? "t1" : null; this.lastLead = null; this.kid = null; this.sel = null; this.expanded = false; }
     const list = this.sample ? all : all.filter((a) => a.space === spaceId);
     const spaceName = this.sample ? this.sample.name : spaces().find((p) => p.id === spaceId)?.name ?? "this space";
     const live = new Set(list.map((a) => a.address));
@@ -636,7 +741,8 @@ export default class AgentFlow extends View {
           .child(div().text_color(t.muted).child(`No agents in ${spaceName}`))
           .child(div().text_color(t.dim).child("Start one from the + menu and its work shows here")));
     }
-    const { session, kids, g, flows, flowBy, rows } = this.model(world, list, lead, t);
+    const { session, guessed, kids, g, flows, flowBy, rows } = this.model(world, list, lead, t);
+    const picked = this.view === "map" ? g.byKey.get(this.sel) ?? null : null;
     const mine = plain.filter((k) => k.parent === lead.address);
     const working = kids.filter((k) => k.status === "working").length;
     const wide = this.width >= 640;
@@ -645,7 +751,8 @@ export default class AgentFlow extends View {
     const room = this.width - 24 - (beside ? 236 : 0);
     const bg = overlay ? t.canvas : t.chrome;
     const mapHeight = Math.max(360, this.height - (narrow ? 280 : 330) - (mine.length ? 26 : 0));
-    const body = this.view === "map" ? this.map(lead, g, flows, t, room, mapHeight) : this.view === "timeline" ? this.timeline(lead, g, t, room, bg) : this.flow(lead, session, kids, flows, flowBy, t, room, bg);
+    const body = this.view === "map" ? this.map(lead, g, flows, t, room, mapHeight) : this.view === "timeline" ? this.timeline(lead, g, t, room, bg) : this.flow(lead, session, guessed, kids, flows, flowBy, t, room, bg);
+    const warnings = this.scan.warnings ?? [];
     const color = tone(session?.model, t, lead.app);
 
     return root
@@ -656,13 +763,18 @@ export default class AgentFlow extends View {
             .child(div().flex_1().min_w(0).truncate().text_color(color).child(modelName(session?.model) ?? lead.name)))
           .child(div().flex_none().text_color(working ? t.working : t.muted).child(`${working} RUNNING`)))
         .child(h_flex().gap(8).items_center().flex_none()
-          .when(!!this.error, (e) => e.child(div().max_w(320).truncate().text_color(t.blocked).child(`no scan: ${this.error}`)))
+          .when(!!this.error, (e) => e.child(div().id("scan-error").max_w(320).truncate().text_color(t.blocked)
+            .child(`no scan: ${this.error}`).tooltip(diagnose(this.error))))
+          .when(!this.error && warnings.length > 0, (e) => e.child(div().id("scan-warn").flex_none().text_color(t.blocked)
+            .child("⚠ format changed").tooltip(`${warnings.join("\n")}\n\nAn agent update changed a file Agent Flow reads, so some boxes may say "model unknown". Update the mod, or open an issue with this text.`)))
+          .child(this.button("legend-toggle", "?", t, () => { this.legend = !this.legend; this.store("legend", this.legend ? "on" : "off"); }))
           .child(this.switcher(t))
           .child(closer)))
       .child(this.chips(leads, lead, t))
+      .when(this.legend, (e) => e.child(this.legendRow(g, t)))
       .child(h_flex().flex_1().min_h(0).gap(10).items_start()
-        .when(beside, (e) => e.child(this.side(lead, session, kids, t)))
-        .child(body))
+        .when(beside, (e) => e.child(this.side(lead, session, guessed, kids, t)))
+        .child(picked ? div().relative().flex_1().min_w(0).h_full().child(body).child(this.nodeSide(picked, g, t, Math.min(240, room), Math.max(160, this.height - 330))) : body))
       .when(mine.length > 0, (e) => e.child(this.plainList(mine, t)))
       .child(this.logBox(rows, t, narrow));
   }

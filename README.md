@@ -15,7 +15,8 @@ it from, and scales from one agent to a whole team.
 
 Install: copy `mods/agent-flow/` into `~/.config/herdr-app/mods/`, merge `keys.json` into yours,
 press `ctrl-shift-g`. Needs Node on PATH, and Node 22 or later for opencode and Codex models.
-[RECIPE.md](RECIPE.md) is the brief to build it from scratch.
+[RECIPE.md](RECIPE.md) is the brief to build it from scratch. `npm test` runs the tests (Node 22,
+nothing to install).
 
 The pictures show it as a side panel, opened from a Flow button beside Graph, on example data
 that ships with the mod: `herdr-app do tab.new --mod agent-flow --props '{"example":"platform","view":"map"}'`
@@ -43,7 +44,13 @@ the box; the button lives in your own layout and tab bar, and RECIPE.md says how
   who's talking to whom and rearranges as that changes.
 - **Plain terminals apart.** A dev server the lead started sits in a list under the diagram,
   never as an agent.
-- **A session log** of tool calls, delegations and status changes.
+- **A session log** of tool calls, delegations and status changes, scrolling, with repeats
+  folded into `×3`.
+- **A legend** (`?` in the header) for the marks and for which color is which model, and a
+  detail panel for any agent on the Map.
+- **Honest about guesses.** A session is matched to its terminal by agent and folder. When a
+  folder holds two of one agent that's a guess, and the model shows `≈`. When an agent update
+  changes a file it reads, the header says `⚠ format changed` and names what's missing.
 
 ## What it reads
 
